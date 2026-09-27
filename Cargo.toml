@@ -1,0 +1,27 @@
+[package]
+name = "s3gate"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "HTTP gate that answers requests with redirects to presigned S3 URLs"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+axum = "0.8"
+percent-encoding = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tower-http = { version = "0.7", features = ["request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
