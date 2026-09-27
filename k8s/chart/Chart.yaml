@@ -4,7 +4,7 @@ description: HTTP gate that answers requests with redirects to presigned S3 URLs
 type: application
 version: 0.3.0
 # Default image tag. Override with image.tag (e.g. "latest") until a matching v* tag is published.
-appVersion: "0.1.0"
+appVersion: "0.2.0"
 kubeVersion: ">=1.33.0-0"
 annotations:
   artifacthub.io/license: AGPL-3.0-or-later
