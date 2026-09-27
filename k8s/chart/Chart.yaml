@@ -1,0 +1,17 @@
+apiVersion: v2
+name: s3gate
+description: HTTP gate that answers requests with redirects to presigned S3 URLs
+type: application
+version: 0.1.0
+# Default image tag. Override with image.tag (e.g. "latest") until a matching v* tag is published.
+appVersion: "0.1.0"
+kubeVersion: ">=1.33.0-0"
+annotations:
+  artifacthub.io/license: AGPL-3.0-or-later
+home: https://github.com/cytrinox/s3gate
+sources:
+  - https://github.com/cytrinox/s3gate
+keywords:
+  - s3
+  - presigned-url
+  - gateway

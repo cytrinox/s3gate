@@ -1,0 +1,18 @@
+s3gate is running as {{ include "s3gate.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+Objects in bucket "{{ .Values.s3.bucket }}"{{ with .Values.s3.prefix }} under prefix "{{ . }}"{{ end }} are served as redirects to presigned URLs:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/<key>
+{{- end }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "s3gate.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -i http://localhost:8080/<key>
+{{- end }}
+{{- with .Values.config.readinessPathExists }}
+
+Pods only become ready once the object "{{ . }}" exists in the bucket.
+{{- end }}
+
+The namespace should enforce the restricted Pod Security Standard:
+  kubectl label namespace {{ .Release.Namespace }} pod-security.kubernetes.io/enforce=restricted

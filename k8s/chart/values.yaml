@@ -1,0 +1,167 @@
+# Default values for s3gate.
+#
+# The release namespace should enforce the restricted Pod Security Standard:
+#   kubectl label namespace <ns> pod-security.kubernetes.io/enforce=restricted
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/cytrinox/s3gate
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Overrides tag when set, e.g. "sha256:...".
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+s3:
+  # Required. Bucket to serve from.
+  bucket: ""
+  region: us-east-1
+  # Key prefix all requests are confined to, e.g. "public/".
+  prefix: ""
+  # Custom endpoint for S3-compatible stores (MinIO, Ceph, R2, ...).
+  endpoint: ""
+  # Endpoint written into presigned URLs when clients reach S3 under a different address.
+  publicEndpoint: ""
+  forcePathStyle: false
+
+credentials:
+  # Name of an existing Secret with the keys S3GATE_ACCESS_KEY_ID and
+  # S3GATE_SECRET_ACCESS_KEY (and optionally S3GATE_SESSION_TOKEN).
+  # When set, the values below are ignored and no Secret is created.
+  existingSecret: ""
+  accessKeyId: ""
+  secretAccessKey: ""
+  sessionToken: ""
+
+config:
+  # Presigned URL lifetime in seconds (1-604800).
+  presignTtl: 300
+  # HEAD the object before redirecting; missing objects return 404 from s3gate.
+  checkExists: true
+  # Maximum time in seconds to handle one request (1-3600).
+  requestTimeout: 30
+  # Object key that must exist for the pod to report ready. Empty = always ready.
+  readinessPathExists: ""
+  # Timeout in seconds for the readiness check (1-60).
+  readinessTimeout: 2
+  # json or text
+  logFormat: json
+  # tracing filter, e.g. "info" or "s3gate=debug,info".
+  logLevel: info
+
+# Additional environment variables for the container.
+extraEnv: []
+
+# Run the pod in a user namespace (requires Kubernetes >= 1.33 and runtime/kernel support).
+hostUsers: false
+
+serviceAccount:
+  create: true
+  # Defaults to the fullname when create is true, "default" otherwise.
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+# Liveness and startup never touch S3, so an S3 outage does not restart pods.
+startupProbe:
+  httpGet:
+    path: /_s3gate/healthz
+    port: http
+  periodSeconds: 2
+  failureThreshold: 15
+
+livenessProbe:
+  httpGet:
+    path: /_s3gate/healthz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+# timeoutSeconds must stay above config.readinessTimeout.
+readinessProbe:
+  httpGet:
+    path: /_s3gate/readyz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Keep serving while endpoint removal propagates to ingresses before SIGTERM. 0 disables.
+preStopSleepSeconds: 5
+
+# Should exceed preStopSleepSeconds + config.requestTimeout.
+terminationGracePeriodSeconds: 45
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: s3gate.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: s3gate-tls
+  #    hosts:
+  #      - s3gate.example.com
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# Spread replicas across nodes. Set to [] to disable; the pod selector is added automatically.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

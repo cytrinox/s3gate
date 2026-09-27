@@ -114,7 +114,7 @@ curl -L  http://localhost:8080/hello.txt   # file content
 
 ## Kubernetes
 
-A complete example is in [examples/k8s/deployment.yml](examples/k8s/deployment.yml). It creates a namespace that enforces the `restricted` Pod Security Standard and runs 3 replicas with `hostUsers: false`, a read-only root filesystem and all three probes. The snippet below shows the essentials.
+A Helm chart is in [k8s/chart](k8s/chart/README.md). A complete plain-manifest example is in [examples/k8s/deployment.yml](examples/k8s/deployment.yml). It creates a namespace that enforces the `restricted` Pod Security Standard and runs 3 replicas with `hostUsers: false`, a read-only root filesystem and all three probes. The snippet below shows the essentials.
 
 ```yaml
 containers:

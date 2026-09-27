@@ -15,6 +15,9 @@ concurrency:
 env:
   # Must be lowercase for push-by-digest.
   IMAGE: ghcr.io/${{ github.repository }}
+  # Helm OCI repository; the chart ends up at <CHART_REPO>/s3gate.
+  CHART_REPO: ghcr.io/${{ github.repository_owner }}/charts
+  HELM_VERSION: v4.3.0
 
 jobs:
   test:
@@ -139,3 +142,49 @@ jobs:
 
       - name: Inspect image
         run: docker buildx imagetools inspect "${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"
+
+  chart-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Lint and render chart
+        run: |
+          set -- --set s3.bucket=ci --set credentials.existingSecret=ci
+          helm lint k8s/chart --strict "$@"
+          helm template ci k8s/chart "$@" > /dev/null
+
+  # Tags only: Helm chart versions must be SemVer, so main has no "latest" chart.
+  # v1.2.3 -> chart version 1.2.3 with appVersion 1.2.3 (= image tag 1.2.3).
+  # Runs after merge so the image the chart points to already exists.
+  chart-publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [merge, chart-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: helm registry login ghcr.io --username "$ACTOR" --password-stdin <<< "$TOKEN"
+
+      - name: Package and push chart
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          helm package k8s/chart --version "$version" --app-version "$version" --destination dist
+          helm push "dist/s3gate-${version}.tgz" "oci://${CHART_REPO,,}"

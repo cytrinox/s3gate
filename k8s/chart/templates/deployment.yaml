@@ -1,0 +1,155 @@
+{{- include "s3gate.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "s3gate.fullname" . }}
+  labels:
+    {{- include "s3gate.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  {{- with .Values.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "s3gate.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if not .Values.credentials.existingSecret }}
+        checksum/credentials: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "s3gate.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      hostUsers: {{ .Values.hostUsers }}
+      serviceAccountName: {{ include "s3gate.serviceAccountName" . }}
+      # s3gate never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: s3gate
+          image: {{ include "s3gate.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: S3GATE_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+            - name: S3GATE_REGION
+              value: {{ .Values.s3.region | quote }}
+            {{- with .Values.s3.prefix }}
+            - name: S3GATE_PREFIX
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.s3.endpoint }}
+            - name: S3GATE_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.s3.publicEndpoint }}
+            - name: S3GATE_PUBLIC_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: S3GATE_FORCE_PATH_STYLE
+              value: {{ .Values.s3.forcePathStyle | quote }}
+            - name: S3GATE_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "s3gate.secretName" . }}
+                  key: S3GATE_ACCESS_KEY_ID
+            - name: S3GATE_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "s3gate.secretName" . }}
+                  key: S3GATE_SECRET_ACCESS_KEY
+            - name: S3GATE_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "s3gate.secretName" . }}
+                  key: S3GATE_SESSION_TOKEN
+                  optional: true
+            - name: S3GATE_PRESIGN_TTL
+              value: {{ .Values.config.presignTtl | quote }}
+            - name: S3GATE_CHECK_EXISTS
+              value: {{ .Values.config.checkExists | quote }}
+            - name: S3GATE_REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            {{- with .Values.config.readinessPathExists }}
+            - name: S3GATE_READINESS_PATH_EXISTS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: S3GATE_READINESS_TIMEOUT
+              value: {{ .Values.config.readinessTimeout | quote }}
+            - name: S3GATE_LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.config.logLevel | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if gt (int .Values.preStopSleepSeconds) 0 }}
+          lifecycle:
+            # The image has no shell, so this uses the built-in sleep action.
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        - {{ toYaml (merge (deepCopy .) (dict "labelSelector" (dict "matchLabels" (include "s3gate.selectorLabels" $ | fromYaml)))) | nindent 10 | trim }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
