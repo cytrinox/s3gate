@@ -62,6 +62,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if and (not .Values.credentials.existingSecret) (not (and .Values.credentials.accessKeyId .Values.credentials.secretAccessKey)) }}
 {{- fail "set credentials.existingSecret, or both credentials.accessKeyId and credentials.secretAccessKey" }}
 {{- end }}
+{{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) }}
+{{- fail "metrics.serviceMonitor.enabled requires metrics.enabled" }}
+{{- end }}
+{{- if eq (int .Values.metrics.port) 8080 }}
+{{- fail "metrics.port must differ from the application port 8080" }}
+{{- end }}
 {{- if not (has .Values.config.logFormat (list "json" "text")) }}
 {{- fail "config.logFormat must be json or text" }}
 {{- end }}

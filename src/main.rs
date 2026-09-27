@@ -3,20 +3,23 @@
 
 mod config;
 mod keys;
+mod metrics;
 mod routes;
 mod store;
 
-use std::{net::SocketAddr, process::ExitCode};
+use std::{future::IntoFuture, net::SocketAddr, process::ExitCode, sync::Arc};
 
 use tokio::{
     net::TcpListener,
     signal::unix::{SignalKind, signal},
+    sync::watch,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::{
     config::{Config, LogFormat},
+    metrics::{HttpMetrics, Metrics},
     routes::{AppState, Settings},
     store::S3Store,
 };
@@ -65,6 +68,7 @@ async fn run(config: Config) -> std::io::Result<()> {
         request_timeout_s = config.request_timeout.as_secs(),
         check_exists = config.check_exists,
         readiness_path_exists = config.readiness_path_exists.as_deref().unwrap_or("-"),
+        metrics_enabled = config.metrics_enabled,
         "starting s3gate"
     );
 
@@ -72,15 +76,49 @@ async fn run(config: Config) -> std::io::Result<()> {
     let listener = TcpListener::bind(config.listen).await?;
     info!(listen = %listener.local_addr()?, "listening");
 
-    axum::serve(
+    let (http_metrics, metrics_server) = if config.metrics_enabled {
+        let metrics = Arc::new(Metrics::install()?);
+        let http_metrics = HttpMetrics::new(&metrics.meter());
+        let listener = TcpListener::bind(config.metrics_listen).await?;
+        info!(listen = %listener.local_addr()?, "listening (metrics)");
+        (http_metrics, Some((listener, metrics::router(metrics))))
+    } else {
+        (HttpMetrics::new(&metrics::disabled_meter()), None)
+    };
+
+    // One signal task drives a watch that every server observes.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    let api = axum::serve(
         listener,
-        routes::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        routes::router(state, http_metrics).into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    .with_graceful_shutdown(wait_for_shutdown(shutdown_rx.clone()))
+    .into_future();
+    match metrics_server {
+        Some((listener, router)) => {
+            let metrics = axum::serve(listener, router)
+                .with_graceful_shutdown(wait_for_shutdown(shutdown_rx))
+                .into_future();
+            tokio::try_join!(api, metrics)?;
+        }
+        None => api.await?,
+    }
 
     info!("shutdown complete");
     Ok(())
+}
+
+async fn wait_for_shutdown(mut rx: watch::Receiver<bool>) {
+    while !*rx.borrow() {
+        if rx.changed().await.is_err() {
+            break;
+        }
+    }
 }
 
 async fn shutdown_signal() {

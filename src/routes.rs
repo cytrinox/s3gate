@@ -22,6 +22,7 @@ use tracing::{Span, debug, field::Empty, info, info_span, warn};
 use crate::{
     config::Config,
     keys::{self, KeyError},
+    metrics::HttpMetrics,
     store::{ObjectStore, PresignMethod, StoreError},
 };
 
@@ -72,11 +73,11 @@ impl<S> Clone for AppState<S> {
     }
 }
 
-/// Response marker: probe traffic is logged at debug instead of info.
+/// Response marker: probe traffic is logged at debug instead of info and not counted in metrics.
 #[derive(Clone, Copy)]
 struct Probe;
 
-pub fn router<S: ObjectStore>(state: AppState<S>) -> Router {
+pub fn router<S: ObjectStore>(state: AppState<S>, http_metrics: HttpMetrics) -> Router {
     let request_timeout = state.settings.request_timeout;
     Router::new()
         .route("/_s3gate/healthz", get(healthz))
@@ -88,6 +89,8 @@ pub fn router<S: ObjectStore>(state: AppState<S>) -> Router {
             request_timeout,
             enforce_timeout,
         ))
+        // Outside the timeout, so the 504s it produces are counted too.
+        .layer(middleware::from_fn_with_state(http_metrics, count_requests))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(make_span)
@@ -97,6 +100,19 @@ pub fn router<S: ObjectStore>(state: AppState<S>) -> Router {
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+}
+
+async fn count_requests(
+    State(http_metrics): State<HttpMetrics>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let response = next.run(request).await;
+    if response.extensions().get::<Probe>().is_none() {
+        http_metrics.record_request(&method, response.status());
+    }
+    response
 }
 
 /// Aborts request handling (including in-flight S3 calls) once `timeout` has elapsed.
@@ -370,13 +386,22 @@ mod tests {
         }
     }
 
-    async fn send(state: AppState<MockStore>, method: Method, path: &str) -> Response {
+    /// Router with no-op metrics.
+    fn app(state: AppState<MockStore>) -> Router {
+        router(state, HttpMetrics::new(&crate::metrics::disabled_meter()))
+    }
+
+    async fn send_to(app: Router, method: Method, path: &str) -> Response {
         let request = Request::builder()
             .method(method)
             .uri(path)
             .body(Body::empty())
             .unwrap();
-        router(state).oneshot(request).await.unwrap()
+        app.oneshot(request).await.unwrap()
+    }
+
+    async fn send(state: AppState<MockStore>, method: Method, path: &str) -> Response {
+        send_to(app(state), method, path).await
     }
 
     async fn body(response: Response) -> String {
@@ -516,7 +541,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let state = AppState::new(store(&[]), settings());
-        let response = router(state).oneshot(request).await.unwrap();
+        let response = app(state).oneshot(request).await.unwrap();
         assert_eq!(response.headers()["x-request-id"], "abc-123");
     }
 
@@ -599,6 +624,45 @@ mod tests {
         );
         let response = send(state, Method::GET, "/_s3gate/readyz").await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn counts_requests_by_method_and_status() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = router(
+            AppState::new(store(&["a.txt"]), settings()),
+            HttpMetrics::new(&metrics.meter()),
+        );
+        for (method, path) in [
+            (Method::GET, "/a.txt"),
+            (Method::GET, "/a.txt"),
+            (Method::GET, "/missing.txt"),
+            (Method::POST, "/a.txt"),
+            (Method::from_bytes(b"PROPFIND").unwrap(), "/a.txt"),
+            (Method::GET, "/_s3gate/healthz"),
+            (Method::GET, "/_s3gate/readyz"),
+        ] {
+            send_to(app.clone(), method, path).await;
+        }
+
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        let count = |method: &str, status: u16| {
+            exposition
+                .lines()
+                .filter(|line| line.starts_with("s3gate_http_requests_total{"))
+                .find(|line| {
+                    line.contains(&format!("method=\"{method}\""))
+                        && line.contains(&format!("status_code=\"{status}\""))
+                })
+                .and_then(|line| line.rsplit(' ').next())
+                .map(str::to_owned)
+        };
+        assert_eq!(count("GET", 302).as_deref(), Some("2"), "{exposition}");
+        assert_eq!(count("GET", 404).as_deref(), Some("1"));
+        assert_eq!(count("POST", 405).as_deref(), Some("1"));
+        assert_eq!(count("_OTHER", 405).as_deref(), Some("1"));
+        // Probes are not counted.
+        assert_eq!(count("GET", 200), None);
     }
 
     #[test]

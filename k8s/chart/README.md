@@ -57,6 +57,10 @@ The full list is in [values.yaml](values.yaml).
 | `hostUsers` | `false` | Run in a user namespace |
 | `preStopSleepSeconds` | `5` | Delay before SIGTERM so ingresses stop routing to the pod |
 | `terminationGracePeriodSeconds` | `45` | Keep above `preStopSleepSeconds + config.requestTimeout` |
+| `metrics.enabled` | `false` | Serve `/metrics` on a separate container and Service port |
+| `metrics.port` | `9090` | Metrics port; must differ from 8080 |
+| `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor; requires `metrics.enabled` |
+| `metrics.serviceMonitor.*` | see values | `namespace`, `interval`, `scrapeTimeout`, `honorLabels`, `labels`, `metricRelabelings`, `relabelings` |
 | `ingress.*` | disabled | Standard Ingress; rate limiting and blocklists go in its annotations |
 | `podDisruptionBudget.*` | enabled, `maxUnavailable: 1` | Only rendered with more than one replica |
 | `autoscaling.*` | disabled | CPU-based HorizontalPodAutoscaler |

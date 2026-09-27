@@ -62,6 +62,8 @@ All settings are environment variables. `AWS_*` variables, `~/.aws` profiles and
 | `S3GATE_READINESS_TIMEOUT` | `2` | Timeout in seconds for the readiness check (1–60) |
 | `S3GATE_REQUEST_TIMEOUT` | `30` | Maximum time in seconds to handle one request, including S3 calls and probes (1–3600) |
 | `S3GATE_LISTEN` | `0.0.0.0:8080` | Listen address |
+| `S3GATE_METRICS_ENABLED` | `false` | Serve Prometheus metrics on a separate listener |
+| `S3GATE_METRICS_LISTEN` | `0.0.0.0:9090` | Metrics listen address (must differ from `S3GATE_LISTEN`) |
 | `S3GATE_LOG_FORMAT` | `json` | `json` or `text` |
 | `RUST_LOG` | `info` | Log filter. Set `debug` to also see probe requests and rejected paths. |
 
@@ -86,6 +88,14 @@ s3gate writes one `request completed` event per request, with these fields:
 | `latency_ms` | Time to answer, in milliseconds |
 
 Presigned URLs and signatures are never logged. `client_ip` comes from headers the client can set, so only trust it when the ingress overwrites them. `peer` is always the real TCP peer.
+
+## Metrics
+
+With `S3GATE_METRICS_ENABLED=true`, s3gate serves `GET /metrics` in the Prometheus text format on `S3GATE_METRICS_LISTEN`. That's a separate port, so scrapes never go through the ingress and never appear in the access log. Metrics are collected with OpenTelemetry and exported through a Prometheus registry. Besides `target_info` (service name and version), s3gate exports:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `s3gate_http_requests_total` | counter | `method`, `status_code` | HTTP requests on the main port, including rejected ones and timeouts (`504`). Probe requests to `/_s3gate/*` are not counted. Unknown methods are reported as `_OTHER`. |
 
 ## Build and run
 

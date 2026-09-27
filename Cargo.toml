@@ -10,7 +10,11 @@ publish = false
 [dependencies]
 aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
 axum = "0.8"
+opentelemetry = "0.33"
+opentelemetry-prometheus = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 percent-encoding = "2"
+prometheus = "0.14"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 tower-http = { version = "0.7", features = ["request-id", "trace"] }

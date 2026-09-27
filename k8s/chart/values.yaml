@@ -127,6 +127,23 @@ strategy:
     maxUnavailable: 0
     maxSurge: 1
 
+# Prometheus metrics on a separate port (GET /metrics).
+metrics:
+  enabled: false
+  port: 9090
+  # Prometheus Operator ServiceMonitor; requires metrics.enabled.
+  serviceMonitor:
+    enabled: false
+    # Namespace for the ServiceMonitor. Defaults to the release namespace.
+    namespace: ""
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: false
+    # Extra labels, e.g. to match the Prometheus serviceMonitorSelector.
+    labels: {}
+    metricRelabelings: []
+    relabelings: []
+
 service:
   type: ClusterIP
   port: 80

@@ -32,6 +32,8 @@ pub struct Config {
     pub readiness_timeout: Duration,
     pub request_timeout: Duration,
     pub listen: SocketAddr,
+    pub metrics_enabled: bool,
+    pub metrics_listen: SocketAddr,
     pub log_format: LogFormat,
 }
 
@@ -61,7 +63,7 @@ impl Config {
         };
         let required = |name: &'static str| get(name).ok_or(ConfigError::Missing(name));
 
-        Ok(Self {
+        let config = Self {
             bucket: required("S3GATE_BUCKET")?,
             prefix: normalize_prefix(get("S3GATE_PREFIX").as_deref().unwrap_or("")),
             endpoint: get("S3GATE_ENDPOINT")
@@ -98,15 +100,17 @@ impl Config {
                 .transpose()?
                 .unwrap_or(Duration::from_secs(30)),
             listen: get("S3GATE_LISTEN")
-                .map(|value| {
-                    value.parse().map_err(|_| ConfigError::Invalid {
-                        var: "S3GATE_LISTEN",
-                        value,
-                        reason: "expected a socket address such as 0.0.0.0:8080",
-                    })
-                })
+                .map(|value| parse_addr("S3GATE_LISTEN", value))
                 .transpose()?
                 .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 8080))),
+            metrics_enabled: get("S3GATE_METRICS_ENABLED")
+                .map(|value| parse_bool("S3GATE_METRICS_ENABLED", value))
+                .transpose()?
+                .unwrap_or(false),
+            metrics_listen: get("S3GATE_METRICS_LISTEN")
+                .map(|value| parse_addr("S3GATE_METRICS_LISTEN", value))
+                .transpose()?
+                .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 9090))),
             log_format: match get("S3GATE_LOG_FORMAT").as_deref() {
                 None | Some("json") => LogFormat::Json,
                 Some("text") => LogFormat::Text,
@@ -118,7 +122,16 @@ impl Config {
                     });
                 }
             },
-        })
+        };
+
+        if config.metrics_enabled && config.metrics_listen == config.listen {
+            return Err(ConfigError::Invalid {
+                var: "S3GATE_METRICS_LISTEN",
+                value: config.metrics_listen.to_string(),
+                reason: "must differ from S3GATE_LISTEN",
+            });
+        }
+        Ok(config)
     }
 }
 
@@ -143,6 +156,8 @@ impl fmt::Debug for Config {
             .field("readiness_timeout", &self.readiness_timeout)
             .field("request_timeout", &self.request_timeout)
             .field("listen", &self.listen)
+            .field("metrics_enabled", &self.metrics_enabled)
+            .field("metrics_listen", &self.metrics_listen)
             .field("log_format", &self.log_format)
             .finish()
     }
@@ -167,6 +182,14 @@ fn parse_endpoint(var: &'static str, value: String) -> Result<String, ConfigErro
             reason: "expected an http:// or https:// URL",
         })
     }
+}
+
+fn parse_addr(var: &'static str, value: String) -> Result<SocketAddr, ConfigError> {
+    value.parse().map_err(|_| ConfigError::Invalid {
+        var,
+        value,
+        reason: "expected a socket address such as 0.0.0.0:8080",
+    })
 }
 
 fn parse_bool(var: &'static str, value: String) -> Result<bool, ConfigError> {
@@ -226,6 +249,8 @@ mod tests {
         assert_eq!(config.readiness_timeout, Duration::from_secs(2));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
         assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
+        assert!(!config.metrics_enabled);
+        assert_eq!(config.metrics_listen, "0.0.0.0:9090".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Json);
     }
 
@@ -283,6 +308,8 @@ mod tests {
             ("S3GATE_READINESS_TIMEOUT", "5"),
             ("S3GATE_REQUEST_TIMEOUT", "12"),
             ("S3GATE_LISTEN", "127.0.0.1:9999"),
+            ("S3GATE_METRICS_ENABLED", "yes"),
+            ("S3GATE_METRICS_LISTEN", "127.0.0.1:9100"),
             ("S3GATE_LOG_FORMAT", "text"),
         ]);
         let config = load(&vars).unwrap();
@@ -300,6 +327,8 @@ mod tests {
         assert_eq!(config.readiness_timeout, Duration::from_secs(5));
         assert_eq!(config.request_timeout, Duration::from_secs(12));
         assert_eq!(config.listen, "127.0.0.1:9999".parse().unwrap());
+        assert!(config.metrics_enabled);
+        assert_eq!(config.metrics_listen, "127.0.0.1:9100".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Text);
     }
 
@@ -314,6 +343,8 @@ mod tests {
             ("S3GATE_REQUEST_TIMEOUT", "0"),
             ("S3GATE_REQUEST_TIMEOUT", "3601"),
             ("S3GATE_LISTEN", "8080"),
+            ("S3GATE_METRICS_ENABLED", "sometimes"),
+            ("S3GATE_METRICS_LISTEN", "9090"),
             ("S3GATE_LOG_FORMAT", "xml"),
         ] {
             let mut vars = MINIMAL.to_vec();
@@ -323,6 +354,23 @@ mod tests {
                 other => panic!("{var}={value}: expected Invalid, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn metrics_listen_must_differ_from_listen() {
+        let mut vars = MINIMAL.to_vec();
+        vars.extend([
+            ("S3GATE_LISTEN", "0.0.0.0:9090"),
+            ("S3GATE_METRICS_ENABLED", "true"),
+        ]);
+        match load(&vars) {
+            Err(ConfigError::Invalid { var, .. }) => assert_eq!(var, "S3GATE_METRICS_LISTEN"),
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+
+        // Only a conflict when the metrics listener actually runs.
+        vars.pop();
+        assert!(load(&vars).is_ok());
     }
 
     #[test]

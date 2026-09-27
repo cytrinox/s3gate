@@ -54,6 +54,11 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: S3GATE_BUCKET
               value: {{ .Values.s3.bucket | quote }}
@@ -101,6 +106,12 @@ spec:
             {{- end }}
             - name: S3GATE_READINESS_TIMEOUT
               value: {{ .Values.config.readinessTimeout | quote }}
+            - name: S3GATE_METRICS_ENABLED
+              value: {{ .Values.metrics.enabled | quote }}
+            {{- if .Values.metrics.enabled }}
+            - name: S3GATE_METRICS_LISTEN
+              value: {{ printf "0.0.0.0:%d" (int .Values.metrics.port) | quote }}
+            {{- end }}
             - name: S3GATE_LOG_FORMAT
               value: {{ .Values.config.logFormat | quote }}
             - name: RUST_LOG
