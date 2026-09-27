@@ -14,7 +14,7 @@ use axum::{
     routing::get,
 };
 use opentelemetry::{
-    KeyValue,
+    Key, KeyValue,
     metrics::{Counter, Meter, MeterProvider},
 };
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
@@ -79,15 +79,33 @@ pub fn disabled_meter() -> Meter {
 #[derive(Clone)]
 pub struct HttpMetrics {
     requests: Counter<u64>,
+    fetches: Counter<u64>,
+    /// `level1..levelN` label keys for the fetch counter; empty disables it.
+    level_keys: Arc<[Key]>,
 }
 
 impl HttpMetrics {
-    pub fn new(meter: &Meter) -> Self {
+    pub fn new(meter: &Meter, fetch_levels: usize) -> Self {
         Self {
             requests: meter
                 .u64_counter("s3gate.http.requests")
                 .with_description("Count of HTTP requests by method and status code")
                 .build(),
+            fetches: meter
+                .u64_counter("s3gate.fetches")
+                .with_description("Successful GET redirects by path prefix")
+                .build(),
+            level_keys: (1..=fetch_levels)
+                .map(|level| Key::new(format!("level{level}")))
+                .collect(),
+        }
+    }
+
+    /// Counts a successful download of `relative_path` (the object path below the prefix).
+    pub fn record_fetch(&self, relative_path: &str) {
+        if !self.level_keys.is_empty() {
+            self.fetches
+                .add(1, &fetch_attributes(relative_path, &self.level_keys));
         }
     }
 
@@ -100,6 +118,29 @@ impl HttpMetrics {
             ],
         );
     }
+}
+
+/// One `levelN` label per configured level, taken from the path segments (empty when the
+/// path is shorter), plus `subpath`: the existing segments up to that depth, e.g.
+/// `foo/bar/baz` at two levels gives `level1=foo, level2=bar, subpath=/foo/bar`.
+fn fetch_attributes(relative_path: &str, level_keys: &[Key]) -> Vec<KeyValue> {
+    let segments: Vec<&str> = relative_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .take(level_keys.len())
+        .collect();
+    let mut attributes: Vec<KeyValue> = level_keys
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            KeyValue::new(
+                key.clone(),
+                segments.get(index).copied().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    attributes.push(KeyValue::new("subpath", format!("/{}", segments.join("/"))));
+    attributes
 }
 
 /// Clients can send arbitrary method tokens; folding unknown ones into `_OTHER`
@@ -165,6 +206,70 @@ mod tests {
         assert_eq!(
             response.headers()[header::CONTENT_TYPE],
             "text/plain; version=0.0.4"
+        );
+    }
+
+    fn labels(path: &str, levels: usize) -> Vec<(String, String)> {
+        let keys: Vec<Key> = (1..=levels)
+            .map(|level| Key::new(format!("level{level}")))
+            .collect();
+        fetch_attributes(path, &keys)
+            .into_iter()
+            .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+            .collect()
+    }
+
+    fn expected(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn fetch_attributes_follow_level() {
+        assert_eq!(
+            labels("foo/bar/baz", 1),
+            expected(&[("level1", "foo"), ("subpath", "/foo")])
+        );
+        assert_eq!(
+            labels("foo/bar/baz", 2),
+            expected(&[
+                ("level1", "foo"),
+                ("level2", "bar"),
+                ("subpath", "/foo/bar")
+            ])
+        );
+        assert_eq!(
+            labels("foo/bar/baz", 3),
+            expected(&[
+                ("level1", "foo"),
+                ("level2", "bar"),
+                ("level3", "baz"),
+                ("subpath", "/foo/bar/baz"),
+            ])
+        );
+    }
+
+    #[test]
+    fn fetch_attributes_pad_short_paths() {
+        assert_eq!(
+            labels("foo.txt", 2),
+            expected(&[
+                ("level1", "foo.txt"),
+                ("level2", ""),
+                ("subpath", "/foo.txt")
+            ])
+        );
+        assert_eq!(
+            labels("foo/bar", 4),
+            expected(&[
+                ("level1", "foo"),
+                ("level2", "bar"),
+                ("level3", ""),
+                ("level4", ""),
+                ("subpath", "/foo/bar"),
+            ])
         );
     }
 

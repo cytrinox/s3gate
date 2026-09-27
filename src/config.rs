@@ -8,6 +8,9 @@ use std::{env, fmt, net::SocketAddr, time::Duration};
 /// Longest lifetime SigV4 allows for a presigned URL.
 const MAX_PRESIGN_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// Upper bound for the fetch counter's path depth, as a guard against runaway cardinality.
+const MAX_FETCH_LEVELS: usize = 10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogFormat {
     Json,
@@ -34,6 +37,8 @@ pub struct Config {
     pub listen: SocketAddr,
     pub metrics_enabled: bool,
     pub metrics_listen: SocketAddr,
+    /// Path depth for the fetch counter; 0 disables it.
+    pub metrics_fetch_levels: usize,
     pub log_format: LogFormat,
 }
 
@@ -111,6 +116,10 @@ impl Config {
                 .map(|value| parse_addr("S3GATE_METRICS_LISTEN", value))
                 .transpose()?
                 .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 9090))),
+            metrics_fetch_levels: get("S3GATE_METRICS_FETCH_LEVELS")
+                .map(|value| parse_count("S3GATE_METRICS_FETCH_LEVELS", value, MAX_FETCH_LEVELS))
+                .transpose()?
+                .unwrap_or(0),
             log_format: match get("S3GATE_LOG_FORMAT").as_deref() {
                 None | Some("json") => LogFormat::Json,
                 Some("text") => LogFormat::Text,
@@ -158,6 +167,7 @@ impl fmt::Debug for Config {
             .field("listen", &self.listen)
             .field("metrics_enabled", &self.metrics_enabled)
             .field("metrics_listen", &self.metrics_listen)
+            .field("metrics_fetch_levels", &self.metrics_fetch_levels)
             .field("log_format", &self.log_format)
             .finish()
     }
@@ -200,6 +210,17 @@ fn parse_bool(var: &'static str, value: String) -> Result<bool, ConfigError> {
             var,
             value,
             reason: "expected true or false",
+        }),
+    }
+}
+
+fn parse_count(var: &'static str, value: String, max: usize) -> Result<usize, ConfigError> {
+    match value.parse::<usize>() {
+        Ok(count) if count <= max => Ok(count),
+        _ => Err(ConfigError::Invalid {
+            var,
+            value,
+            reason: "expected a whole number within the allowed range",
         }),
     }
 }
@@ -251,6 +272,7 @@ mod tests {
         assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
         assert!(!config.metrics_enabled);
         assert_eq!(config.metrics_listen, "0.0.0.0:9090".parse().unwrap());
+        assert_eq!(config.metrics_fetch_levels, 0);
         assert_eq!(config.log_format, LogFormat::Json);
     }
 
@@ -310,6 +332,7 @@ mod tests {
             ("S3GATE_LISTEN", "127.0.0.1:9999"),
             ("S3GATE_METRICS_ENABLED", "yes"),
             ("S3GATE_METRICS_LISTEN", "127.0.0.1:9100"),
+            ("S3GATE_METRICS_FETCH_LEVELS", "2"),
             ("S3GATE_LOG_FORMAT", "text"),
         ]);
         let config = load(&vars).unwrap();
@@ -329,6 +352,7 @@ mod tests {
         assert_eq!(config.listen, "127.0.0.1:9999".parse().unwrap());
         assert!(config.metrics_enabled);
         assert_eq!(config.metrics_listen, "127.0.0.1:9100".parse().unwrap());
+        assert_eq!(config.metrics_fetch_levels, 2);
         assert_eq!(config.log_format, LogFormat::Text);
     }
 
@@ -345,6 +369,9 @@ mod tests {
             ("S3GATE_LISTEN", "8080"),
             ("S3GATE_METRICS_ENABLED", "sometimes"),
             ("S3GATE_METRICS_LISTEN", "9090"),
+            ("S3GATE_METRICS_FETCH_LEVELS", "11"),
+            ("S3GATE_METRICS_FETCH_LEVELS", "-1"),
+            ("S3GATE_METRICS_FETCH_LEVELS", "two"),
             ("S3GATE_LOG_FORMAT", "xml"),
         ] {
             let mut vars = MINIMAL.to_vec();

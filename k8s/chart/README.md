@@ -76,6 +76,7 @@ The full list is in [values.yaml](values.yaml).
 | `terminationGracePeriodSeconds` | `45` | Keep above `preStopSleepSeconds + config.requestTimeout` |
 | `metrics.enabled` | `false` | Serve `/metrics` on a separate container and Service port |
 | `metrics.port` | `9090` | Metrics port; must differ from 8080 |
+| `metrics.fetchLevels` | `0` | Path depth for `s3gate_fetches_total`; 0 disables it |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor; requires `metrics.enabled` |
 | `metrics.serviceMonitor.*` | see values | `namespace`, `interval`, `scrapeTimeout`, `honorLabels`, `labels`, `metricRelabelings`, `relabelings` |
 | `ingress.*` | disabled | Standard Ingress. Gets the Traefik middleware annotation automatically when `traefik.middlewares.enabled` |

@@ -64,6 +64,7 @@ All settings are environment variables. `AWS_*` variables, `~/.aws` profiles and
 | `S3GATE_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `S3GATE_METRICS_ENABLED` | `false` | Serve Prometheus metrics on a separate listener |
 | `S3GATE_METRICS_LISTEN` | `0.0.0.0:9090` | Metrics listen address (must differ from `S3GATE_LISTEN`) |
+| `S3GATE_METRICS_FETCH_LEVELS` | `0` | Path depth (0–10) for `s3gate_fetches_total`; 0 disables it |
 | `S3GATE_LOG_FORMAT` | `json` | `json` or `text` |
 | `RUST_LOG` | `info` | Log filter. Set `debug` to also see probe requests and rejected paths. |
 
@@ -96,6 +97,19 @@ With `S3GATE_METRICS_ENABLED=true`, s3gate serves `GET /metrics` in the Promethe
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `s3gate_http_requests_total` | counter | `method`, `status_code` | HTTP requests on the main port, including rejected ones and timeouts (`504`). Probe requests to `/_s3gate/*` are not counted. Unknown methods are reported as `_OTHER`. |
+| `s3gate_fetches_total` | counter | `level1`…`levelN`, `subpath` | Successful `GET` redirects, grouped by the first N path segments (N = `S3GATE_METRICS_FETCH_LEVELS`). `HEAD`, 404s, errors and timeouts are not counted. |
+
+For `s3gate_fetches_total`, the labels come from the object path below `S3GATE_PREFIX`. A `GET /foo/bar/baz` is labelled:
+
+| Level | Labels |
+|---|---|
+| 1 | `level1="foo"`, `subpath="/foo"` |
+| 2 | `level1="foo"`, `level2="bar"`, `subpath="/foo/bar"` |
+| 3 | `level1="foo"`, `level2="bar"`, `level3="baz"`, `subpath="/foo/bar/baz"` |
+
+Paths with fewer segments than N get empty labels for the missing levels. For example, `/foo.txt` at level 2 gives `level1="foo.txt"`, `level2=""`, `subpath="/foo.txt"`.
+
+Every distinct prefix becomes its own time series. A level deep enough to reach object names therefore creates one series per downloaded object, so choose N to match the directory layout.
 
 ## Build and run
 

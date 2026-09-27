@@ -69,6 +69,7 @@ async fn run(config: Config) -> std::io::Result<()> {
         check_exists = config.check_exists,
         readiness_path_exists = config.readiness_path_exists.as_deref().unwrap_or("-"),
         metrics_enabled = config.metrics_enabled,
+        metrics_fetch_levels = config.metrics_fetch_levels,
         "starting s3gate"
     );
 
@@ -78,12 +79,12 @@ async fn run(config: Config) -> std::io::Result<()> {
 
     let (http_metrics, metrics_server) = if config.metrics_enabled {
         let metrics = Arc::new(Metrics::install()?);
-        let http_metrics = HttpMetrics::new(&metrics.meter());
+        let http_metrics = HttpMetrics::new(&metrics.meter(), config.metrics_fetch_levels);
         let listener = TcpListener::bind(config.metrics_listen).await?;
         info!(listen = %listener.local_addr()?, "listening (metrics)");
         (http_metrics, Some((listener, metrics::router(metrics))))
     } else {
-        (HttpMetrics::new(&metrics::disabled_meter()), None)
+        (HttpMetrics::new(&metrics::disabled_meter(), 0), None)
     };
 
     // One signal task drives a watch that every server observes.

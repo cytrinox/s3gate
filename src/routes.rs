@@ -77,6 +77,10 @@ impl<S> Clone for AppState<S> {
 #[derive(Clone, Copy)]
 struct Probe;
 
+/// Response marker for a successful GET redirect, carrying the object path below the prefix.
+#[derive(Clone)]
+struct Fetched(String);
+
 pub fn router<S: ObjectStore>(state: AppState<S>, http_metrics: HttpMetrics) -> Router {
     let request_timeout = state.settings.request_timeout;
     Router::new()
@@ -111,6 +115,9 @@ async fn count_requests(
     let response = next.run(request).await;
     if response.extensions().get::<Probe>().is_none() {
         http_metrics.record_request(&method, response.status());
+    }
+    if let Some(Fetched(path)) = response.extensions().get::<Fetched>() {
+        http_metrics.record_fetch(path);
     }
     response
 }
@@ -224,14 +231,21 @@ async fn gate<S: ObjectStore>(
     };
 
     span.record("outcome", "redirect");
-    (
+    let mut response = (
         StatusCode::FOUND,
         [
             (header::LOCATION, location),
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
     )
-        .into_response()
+        .into_response();
+    if presign_method == PresignMethod::Get {
+        let relative = key.strip_prefix(settings.prefix.as_str()).unwrap_or(&key);
+        response
+            .extensions_mut()
+            .insert(Fetched(relative.to_owned()));
+    }
+    response
 }
 
 fn store_failure(span: &Span, err: StoreError) -> Response {
@@ -388,7 +402,10 @@ mod tests {
 
     /// Router with no-op metrics.
     fn app(state: AppState<MockStore>) -> Router {
-        router(state, HttpMetrics::new(&crate::metrics::disabled_meter()))
+        router(
+            state,
+            HttpMetrics::new(&crate::metrics::disabled_meter(), 0),
+        )
     }
 
     async fn send_to(app: Router, method: Method, path: &str) -> Response {
@@ -631,7 +648,7 @@ mod tests {
         let metrics = crate::metrics::Metrics::new().unwrap();
         let app = router(
             AppState::new(store(&["a.txt"]), settings()),
-            HttpMetrics::new(&metrics.meter()),
+            HttpMetrics::new(&metrics.meter(), 0),
         );
         for (method, path) in [
             (Method::GET, "/a.txt"),
@@ -663,6 +680,70 @@ mod tests {
         assert_eq!(count("_OTHER", 405).as_deref(), Some("1"));
         // Probes are not counted.
         assert_eq!(count("GET", 200), None);
+    }
+
+    fn fetch_series(exposition: &str) -> Vec<&str> {
+        exposition
+            .lines()
+            .filter(|line| line.starts_with("s3gate_fetches_total{"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn counts_fetches_by_path_level() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = router(
+            AppState::new(
+                store(&["pub/foo/bar/baz", "pub/foo.txt"]),
+                Settings {
+                    prefix: "pub/".to_owned(),
+                    ..settings()
+                },
+            ),
+            HttpMetrics::new(&metrics.meter(), 2),
+        );
+        for (method, path) in [
+            (Method::GET, "/foo/bar/baz"),
+            (Method::GET, "/foo/bar/baz"),
+            (Method::GET, "/foo.txt"),
+            (Method::HEAD, "/foo/bar/baz"),
+            (Method::GET, "/foo/missing"),
+        ] {
+            send_to(app.clone(), method, path).await;
+        }
+
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        let series = fetch_series(&exposition);
+        assert_eq!(series.len(), 2, "{exposition}");
+        let value = |labels: &str| {
+            series
+                .iter()
+                .find(|line| line.contains(labels))
+                .and_then(|line| line.rsplit(' ').next())
+        };
+        assert_eq!(
+            value(r#"level1="foo",level2="bar",subpath="/foo/bar""#),
+            Some("2"),
+            "{exposition}"
+        );
+        assert_eq!(
+            value(r#"level1="foo.txt",level2="",subpath="/foo.txt""#),
+            Some("1"),
+            "{exposition}"
+        );
+        assert!(!series.iter().any(|line| line.contains("pub")));
+    }
+
+    #[tokio::test]
+    async fn fetch_counter_disabled_at_level_zero() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = router(
+            AppState::new(store(&["a.txt"]), settings()),
+            HttpMetrics::new(&metrics.meter(), 0),
+        );
+        send_to(app, Method::GET, "/a.txt").await;
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        assert!(fetch_series(&exposition).is_empty(), "{exposition}");
     }
 
     #[test]

@@ -131,6 +131,10 @@ strategy:
 metrics:
   enabled: false
   port: 9090
+  # Path depth (0-10) for s3gate_fetches_total, which counts successful GET redirects
+  # labelled level1..levelN and subpath. 0 disables it. Every distinct prefix becomes
+  # its own series, so keep the level above the object names.
+  fetchLevels: 0
   # Prometheus Operator ServiceMonitor; requires metrics.enabled.
   serviceMonitor:
     enabled: false

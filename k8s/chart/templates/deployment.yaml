@@ -111,6 +111,8 @@ spec:
             {{- if .Values.metrics.enabled }}
             - name: S3GATE_METRICS_LISTEN
               value: {{ printf "0.0.0.0:%d" (int .Values.metrics.port) | quote }}
+            - name: S3GATE_METRICS_FETCH_LEVELS
+              value: {{ .Values.metrics.fetchLevels | quote }}
             {{- end }}
             - name: S3GATE_LOG_FORMAT
               value: {{ .Values.config.logFormat | quote }}
