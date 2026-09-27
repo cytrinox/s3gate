@@ -1,0 +1,63 @@
+{{- if .Values.gateway.enabled }}
+{{- $middlewares := include "s3gate.traefikMiddlewareNames" . | fromJsonArray }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "s3gate.fullname" . }}
+  labels:
+    {{- include "s3gate.labels" . | nindent 4 }}
+  {{- with .Values.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  parentRefs:
+    {{- range .Values.gateway.parentRefs }}
+    - name: {{ required "gateway.parentRefs[].name is required when gateway.enabled" .name | quote }}
+      {{- with .namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+      {{- with .sectionName }}
+      sectionName: {{ . | quote }}
+      {{- end }}
+      {{- with .port }}
+      port: {{ . }}
+      {{- end }}
+    {{- end }}
+  {{- with .Values.gateway.hostnames }}
+  hostnames:
+    {{- range . }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.gateway.rules }}
+    - matches:
+        {{- toYaml .matches | nindent 8 }}
+      {{- if or .filters $middlewares }}
+      filters:
+        {{- with .filters }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- range $middlewares }}
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      backendRefs:
+        {{- if $.Values.traefik.traefikService.enabled }}
+        # The port is part of the TraefikService.
+        - group: traefik.io
+          kind: TraefikService
+          name: {{ include "s3gate.fullname" $ }}-weighted
+        {{- else }}
+        - group: ""
+          kind: Service
+          name: {{ include "s3gate.fullname" $ }}
+          port: {{ $.Values.service.port }}
+        {{- end }}
+    {{- end }}
+{{- end }}

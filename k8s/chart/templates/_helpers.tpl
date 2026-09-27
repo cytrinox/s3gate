@@ -54,6 +54,37 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/*
+Names of the enabled Traefik middlewares in attachment order, as a JSON list.
+Empty when traefik.middlewares.enabled is false.
+*/}}
+{{- define "s3gate.traefikMiddlewareNames" -}}
+{{- $names := list -}}
+{{- if .Values.traefik.middlewares.enabled -}}
+{{- $full := include "s3gate.fullname" . -}}
+{{- if .Values.traefik.middlewares.rateLimit.enabled -}}
+{{- $names = append $names (printf "%s-ratelimit" $full) -}}
+{{- end -}}
+{{- if .Values.traefik.middlewares.secureHeaders.enabled -}}
+{{- $names = append $names (printf "%s-secureheaders" $full) -}}
+{{- end -}}
+{{- if .Values.traefik.middlewares.compression.enabled -}}
+{{- $names = append $names (printf "%s-compression" $full) -}}
+{{- end -}}
+{{- end -}}
+{{- $names | toJson -}}
+{{- end -}}
+
+{{/* Value for traefik.ingress.kubernetes.io/router.middlewares: <ns>-<name>@kubernetescrd,... */}}
+{{- define "s3gate.traefikIngressMiddlewareAnnotation" -}}
+{{- $ns := .Release.Namespace -}}
+{{- $refs := list -}}
+{{- range $name := include "s3gate.traefikMiddlewareNames" . | fromJsonArray -}}
+{{- $refs = append $refs (printf "%s-%s@kubernetescrd" $ns $name) -}}
+{{- end -}}
+{{- join "," $refs -}}
+{{- end -}}
+
 {{/* Fails rendering on configuration s3gate would reject at startup. */}}
 {{- define "s3gate.validate" -}}
 {{- if not .Values.s3.bucket }}

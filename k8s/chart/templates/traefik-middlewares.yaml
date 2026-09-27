@@ -1,0 +1,84 @@
+{{- if .Values.traefik.middlewares.enabled }}
+{{- $full := include "s3gate.fullname" . }}
+{{- $labels := include "s3gate.labels" . }}
+{{- with .Values.traefik.middlewares.rateLimit }}
+{{- if .enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $full }}-ratelimit
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  rateLimit:
+    average: {{ .average }}
+    burst: {{ .burst }}
+    period: {{ .period | quote }}
+    {{- with .sourceCriterion }}
+    sourceCriterion:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- with .Values.traefik.middlewares.secureHeaders }}
+{{- if .enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $full }}-secureheaders
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  headers:
+    browserXssFilter: {{ .browserXssFilter }}
+    contentTypeNosniff: {{ .contentTypeNosniff }}
+    frameDeny: {{ .frameDeny }}
+    {{- with .referrerPolicy }}
+    referrerPolicy: {{ . | quote }}
+    {{- end }}
+    stsSeconds: {{ .stsSeconds }}
+    stsIncludeSubdomains: {{ .stsIncludeSubdomains }}
+    stsPreload: {{ .stsPreload }}
+    {{- with .contentSecurityPolicy }}
+    contentSecurityPolicy: {{ . | quote }}
+    {{- end }}
+    {{- with .permissionsPolicy }}
+    permissionsPolicy: {{ . | quote }}
+    {{- end }}
+    {{- with .customResponseHeaders }}
+    customResponseHeaders:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .customRequestHeaders }}
+    customRequestHeaders:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- with .Values.traefik.middlewares.compression }}
+{{- if .enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $full }}-compression
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  compress:
+    encodings:
+      {{- toYaml .encodings | nindent 6 }}
+    minResponseBodyBytes: {{ .minResponseBodyBytes }}
+    {{- with .includedContentTypes }}
+    includedContentTypes:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with .excludedContentTypes }}
+    excludedContentTypes:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

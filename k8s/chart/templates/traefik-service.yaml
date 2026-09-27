@@ -1,0 +1,41 @@
+{{- if and .Values.gateway.enabled .Values.traefik.traefikService.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: TraefikService
+metadata:
+  name: {{ include "s3gate.fullname" . }}-weighted
+  labels:
+    {{- include "s3gate.labels" . | nindent 4 }}
+spec:
+  weighted:
+    services:
+      - name: {{ include "s3gate.fullname" . }}
+        port: {{ .Values.service.port }}
+        {{- with .Values.traefik.traefikService.weighted.weight }}
+        weight: {{ . }}
+        {{- end }}
+        {{- with .Values.traefik.traefikService.weighted.sticky }}
+        {{- if .enabled }}
+        # Sticky on the service entry pins a client to one pod behind the Service;
+        # spec.weighted.sticky would only pin to this single entry.
+        sticky:
+          cookie:
+            {{- with .cookie.name }}
+            name: {{ . | quote }}
+            {{- end }}
+            secure: {{ .cookie.secure }}
+            httpOnly: {{ .cookie.httpOnly }}
+            {{- with .cookie.sameSite }}
+            sameSite: {{ . }}
+            {{- end }}
+            {{- if gt (int .cookie.maxAge) 0 }}
+            maxAge: {{ .cookie.maxAge }}
+            {{- end }}
+            {{- with .cookie.path }}
+            path: {{ . | quote }}
+            {{- end }}
+            {{- with .cookie.domain }}
+            domain: {{ . | quote }}
+            {{- end }}
+        {{- end }}
+        {{- end }}
+{{- end }}

@@ -1,13 +1,24 @@
 s3gate is running as {{ include "s3gate.fullname" . }} in namespace {{ .Release.Namespace }}.
 
 Objects in bucket "{{ .Values.s3.bucket }}"{{ with .Values.s3.prefix }} under prefix "{{ . }}"{{ end }} are served as redirects to presigned URLs:
+{{- if or .Values.ingress.enabled .Values.gateway.enabled }}
 {{- if .Values.ingress.enabled }}
 {{- range .Values.ingress.hosts }}
-  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/<key>
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}/<key>   (Ingress)
+{{- end }}
+{{- end }}
+{{- if .Values.gateway.enabled }}
+{{- range .Values.gateway.hostnames }}
+  https://{{ . }}/<key>   (HTTPRoute)
+{{- end }}
 {{- end }}
 {{- else }}
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "s3gate.fullname" . }} 8080:{{ .Values.service.port }}
   curl -i http://localhost:8080/<key>
+{{- end }}
+{{- with include "s3gate.traefikMiddlewareNames" . | fromJsonArray }}
+
+Traefik middlewares attached to the routes: {{ join ", " . }}
 {{- end }}
 {{- with .Values.config.readinessPathExists }}
 

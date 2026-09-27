@@ -149,6 +149,9 @@ service:
   port: 80
   annotations: {}
 
+# Ingress and gateway (below) are independent: enable either, both, or neither.
+# With traefik.middlewares.enabled, the Ingress automatically gets a
+# traefik.ingress.kubernetes.io/router.middlewares annotation for the rendered middlewares.
 ingress:
   enabled: false
   className: ""
@@ -162,6 +165,97 @@ ingress:
   #  - secretName: s3gate-tls
   #    hosts:
   #      - s3gate.example.com
+
+# Gateway API (gateway.networking.k8s.io/v1). The chart does not create a Gateway;
+# it renders one HTTPRoute that attaches to an existing Gateway via parentRefs.
+gateway:
+  enabled: false
+  parentRefs:
+    # Required: name of the existing Gateway.
+    - name: ""
+      # Defaults to the release namespace.
+      namespace: ""
+      # A specific listener of the Gateway.
+      sectionName: ""
+      # port: 443
+  hostnames:
+    - s3gate.example.com
+  annotations: {}
+  # Path matches for the HTTPRoute. Default: everything.
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # Extra filters. Traefik middleware ExtensionRef filters are appended
+      # automatically when traefik.middlewares.enabled is true.
+      filters: []
+
+# Traefik CRDs (traefik.io/v1alpha1).
+traefik:
+  # Routes the HTTPRoute through a weighted TraefikService instead of the Service
+  # directly. Only affects gateway mode, not the Ingress.
+  traefikService:
+    enabled: false
+    weighted:
+      # Omitted from the spec when 0.
+      weight: 1
+      # Sticky cookies pin a client to one pod. s3gate keeps no per-pod state,
+      # so this is usually not needed.
+      sticky:
+        enabled: false
+        cookie:
+          # Empty lets Traefik choose a name.
+          name: s3gate_sticky
+          # Set to false if the backend sees plain HTTP, or browsers drop the cookie.
+          secure: true
+          httpOnly: true
+          # none | lax | strict. "none" requires secure.
+          sameSite: lax
+          # 0 = session cookie.
+          maxAge: 0
+          path: ""
+          domain: ""
+
+  # Renders one Middleware per enabled section and attaches them to the Ingress
+  # (annotation) and the HTTPRoute (ExtensionRef filters) in this order:
+  # rateLimit, secureHeaders, compression.
+  middlewares:
+    enabled: false
+
+    rateLimit:
+      enabled: true
+      # Average requests per period and per source; burst is the absolute peak.
+      average: 100
+      burst: 200
+      period: 1s
+      # Defaults to per source IP. Behind another proxy, e.g.:
+      #   ipStrategy:
+      #     depth: 1
+      sourceCriterion: {}
+
+    secureHeaders:
+      enabled: true
+      browserXssFilter: true
+      contentTypeNosniff: true
+      frameDeny: true
+      referrerPolicy: strict-origin-when-cross-origin
+      stsSeconds: 31536000
+      stsIncludeSubdomains: true
+      stsPreload: false
+      contentSecurityPolicy: ""
+      permissionsPolicy: ""
+      # Merged into spec.headers.
+      customResponseHeaders: {}
+      customRequestHeaders: {}
+
+    # s3gate only answers with empty redirects, so compression is off by default.
+    compression:
+      enabled: false
+      encodings: ["br", "zstd", "gzip"]
+      minResponseBodyBytes: 1024
+      includedContentTypes: []
+      excludedContentTypes: []
 
 podDisruptionBudget:
   enabled: true
