@@ -16,6 +16,7 @@ FROM gcr.io/distroless/cc-debian13:nonroot
 LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 COPY LICENSE /usr/share/doc/s3gate/LICENSE
 COPY --from=builder /src/target/release/s3gate /usr/local/bin/s3gate
-USER nonroot
+# Numeric so Kubernetes can verify runAsNonRoot (distroless "nonroot" = 65532).
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/s3gate"]

@@ -1,0 +1,173 @@
+# s3gate example deployment.
+#
+# Requirements:
+#   - Kubernetes >= 1.33 for `hostUsers: false` (user namespaces enabled by default).
+#     The node needs a runtime with user namespace support (containerd >= 2.0 or
+#     CRI-O >= 1.25) and Linux >= 6.3 with idmapped mounts on the kubelet's filesystem.
+#   - Kubernetes >= 1.30 for the `preStop.sleep` lifecycle hook.
+#
+# Apply:
+#   kubectl apply -f deployment.yml
+#
+# Replace the credentials in the Secret below (or create the Secret out of band and
+# delete it from this file) and adjust the S3GATE_* settings in the Deployment.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: s3gate
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3gate-credentials
+  namespace: s3gate
+type: Opaque
+stringData:
+  S3GATE_ACCESS_KEY_ID: CHANGE-ME
+  S3GATE_SECRET_ACCESS_KEY: CHANGE-ME
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3gate
+  namespace: s3gate
+  labels:
+    app.kubernetes.io/name: s3gate
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: s3gate
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: s3gate
+    spec:
+      # Run in a user namespace: UID 65532 in the container maps to an unprivileged
+      # UID on the host.
+      hostUsers: false
+      # s3gate never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Longer than the preStop sleep plus S3GATE_REQUEST_TIMEOUT, so in-flight
+      # requests can finish after SIGTERM.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: s3gate
+      containers:
+        - name: s3gate
+          image: ghcr.io/cytrinox/s3gate:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: s3gate-credentials
+          env:
+            - name: S3GATE_BUCKET
+              value: my-bucket
+            - name: S3GATE_REGION
+              value: us-east-1
+            # For S3-compatible stores (MinIO, Ceph, R2, ...):
+            # - name: S3GATE_ENDPOINT
+            #   value: http://minio.minio.svc:9000
+            # - name: S3GATE_PUBLIC_ENDPOINT
+            #   value: https://s3.example.com
+            # - name: S3GATE_FORCE_PATH_STYLE
+            #   value: "true"
+            - name: S3GATE_PREFIX
+              value: public/
+            - name: S3GATE_PRESIGN_TTL
+              value: "300"
+            - name: S3GATE_REQUEST_TIMEOUT
+              value: "30"
+            # Object that must exist for the pod to report ready. Upload it once, e.g.
+            #   aws s3 cp /dev/null s3://my-bucket/.s3gate-ready
+            - name: S3GATE_READINESS_PATH_EXISTS
+              value: .s3gate-ready
+            - name: S3GATE_READINESS_TIMEOUT
+              value: "2"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /_s3gate/healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+          # Liveness never touches S3, so an S3 outage does not restart pods.
+          livenessProbe:
+            httpGet:
+              path: /_s3gate/healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # timeoutSeconds must stay above S3GATE_READINESS_TIMEOUT.
+          readinessProbe:
+            httpGet:
+              path: /_s3gate/readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            # Keep serving until the endpoint removal has reached every ingress
+            # before SIGTERM starts the graceful shutdown. The image has no shell,
+            # so this uses the built-in sleep action.
+            preStop:
+              sleep:
+                seconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3gate
+  namespace: s3gate
+  labels:
+    app.kubernetes.io/name: s3gate
+spec:
+  selector:
+    app.kubernetes.io/name: s3gate
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
