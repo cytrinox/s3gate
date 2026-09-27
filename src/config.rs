@@ -30,6 +30,7 @@ pub struct Config {
     pub check_exists: bool,
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
+    pub request_timeout: Duration,
     pub listen: SocketAddr,
     pub log_format: LogFormat,
 }
@@ -92,6 +93,10 @@ impl Config {
                 .map(|value| parse_secs("S3GATE_READINESS_TIMEOUT", value, 60))
                 .transpose()?
                 .unwrap_or(Duration::from_secs(2)),
+            request_timeout: get("S3GATE_REQUEST_TIMEOUT")
+                .map(|value| parse_secs("S3GATE_REQUEST_TIMEOUT", value, 3600))
+                .transpose()?
+                .unwrap_or(Duration::from_secs(30)),
             listen: get("S3GATE_LISTEN")
                 .map(|value| {
                     value.parse().map_err(|_| ConfigError::Invalid {
@@ -136,6 +141,7 @@ impl fmt::Debug for Config {
             .field("check_exists", &self.check_exists)
             .field("readiness_path_exists", &self.readiness_path_exists)
             .field("readiness_timeout", &self.readiness_timeout)
+            .field("request_timeout", &self.request_timeout)
             .field("listen", &self.listen)
             .field("log_format", &self.log_format)
             .finish()
@@ -218,6 +224,7 @@ mod tests {
         assert!(!config.force_path_style);
         assert_eq!(config.readiness_path_exists, None);
         assert_eq!(config.readiness_timeout, Duration::from_secs(2));
+        assert_eq!(config.request_timeout, Duration::from_secs(30));
         assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Json);
     }
@@ -274,6 +281,7 @@ mod tests {
             ("S3GATE_CHECK_EXISTS", "off"),
             ("S3GATE_READINESS_PATH_EXISTS", "/.ready"),
             ("S3GATE_READINESS_TIMEOUT", "5"),
+            ("S3GATE_REQUEST_TIMEOUT", "12"),
             ("S3GATE_LISTEN", "127.0.0.1:9999"),
             ("S3GATE_LOG_FORMAT", "text"),
         ]);
@@ -290,6 +298,7 @@ mod tests {
         assert!(!config.check_exists);
         assert_eq!(config.readiness_path_exists.as_deref(), Some(".ready"));
         assert_eq!(config.readiness_timeout, Duration::from_secs(5));
+        assert_eq!(config.request_timeout, Duration::from_secs(12));
         assert_eq!(config.listen, "127.0.0.1:9999".parse().unwrap());
         assert_eq!(config.log_format, LogFormat::Text);
     }
@@ -302,6 +311,8 @@ mod tests {
             ("S3GATE_PRESIGN_TTL", "0"),
             ("S3GATE_PRESIGN_TTL", "604801"),
             ("S3GATE_PRESIGN_TTL", "5m"),
+            ("S3GATE_REQUEST_TIMEOUT", "0"),
+            ("S3GATE_REQUEST_TIMEOUT", "3601"),
             ("S3GATE_LISTEN", "8080"),
             ("S3GATE_LOG_FORMAT", "xml"),
         ] {

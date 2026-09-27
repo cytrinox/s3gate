@@ -62,6 +62,7 @@ async fn run(config: Config) -> std::io::Result<()> {
         public_endpoint = config.public_endpoint.as_deref().unwrap_or("-"),
         region = %config.region,
         presign_ttl_s = config.presign_ttl.as_secs(),
+        request_timeout_s = config.request_timeout.as_secs(),
         check_exists = config.check_exists,
         readiness_path_exists = config.readiness_path_exists.as_deref().unwrap_or("-"),
         "starting s3gate"

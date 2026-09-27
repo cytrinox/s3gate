@@ -9,6 +9,7 @@ use axum::{
     Router,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -31,6 +32,7 @@ pub struct Settings {
     pub check_exists: bool,
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
+    pub request_timeout: Duration,
 }
 
 impl From<&Config> for Settings {
@@ -42,6 +44,7 @@ impl From<&Config> for Settings {
             check_exists: config.check_exists,
             readiness_path_exists: config.readiness_path_exists.clone(),
             readiness_timeout: config.readiness_timeout,
+            request_timeout: config.request_timeout,
         }
     }
 }
@@ -74,11 +77,17 @@ impl<S> Clone for AppState<S> {
 struct Probe;
 
 pub fn router<S: ObjectStore>(state: AppState<S>) -> Router {
+    let request_timeout = state.settings.request_timeout;
     Router::new()
         .route("/_s3gate/healthz", get(healthz))
         .route("/_s3gate/readyz", get(readyz::<S>))
         .fallback(gate::<S>)
         .with_state(state)
+        // Inside the trace layer, so timed-out requests are still logged with their span.
+        .layer(middleware::from_fn_with_state(
+            request_timeout,
+            enforce_timeout,
+        ))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(make_span)
@@ -88,6 +97,25 @@ pub fn router<S: ObjectStore>(state: AppState<S>) -> Router {
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+}
+
+/// Aborts request handling (including in-flight S3 calls) once `timeout` has elapsed.
+async fn enforce_timeout(
+    State(timeout): State<Duration>,
+    request: Request,
+    next: Next,
+) -> Response {
+    match tokio::time::timeout(timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => {
+            Span::current().record("outcome", "timeout");
+            warn!(
+                timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                "request timed out"
+            );
+            plain(StatusCode::GATEWAY_TIMEOUT)
+        }
+    }
 }
 
 async fn healthz() -> Response {
@@ -331,6 +359,7 @@ mod tests {
             check_exists: true,
             readiness_path_exists: None,
             readiness_timeout: Duration::from_secs(2),
+            request_timeout: Duration::from_secs(30),
         }
     }
 
@@ -536,6 +565,23 @@ mod tests {
         let state = AppState::new(store(&[]), not_ready);
         let response = send(state, Method::GET, "/_s3gate/readyz").await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn slow_request_times_out() {
+        let state = AppState::new(
+            MockStore {
+                head_delay: Some(Duration::from_secs(30)),
+                ..store(&["a.txt"])
+            },
+            Settings {
+                request_timeout: Duration::from_millis(20),
+                ..settings()
+            },
+        );
+        let response = send(state, Method::GET, "/a.txt").await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(response.headers().contains_key("x-request-id"));
     }
 
     #[tokio::test]

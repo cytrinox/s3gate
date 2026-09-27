@@ -25,6 +25,7 @@ client ──► ingress (TLS, rate limit, blocklist) ──► s3gate ──302
 | Any other method | `405`, `Allow: GET, HEAD` |
 | S3 denies access (credentials or bucket policy) | `502` |
 | S3 unreachable or erroring | `502`, or `504` on timeout |
+| Request takes longer than `S3GATE_REQUEST_TIMEOUT` | `504`; any in-flight S3 call is abandoned |
 
 - **Key mapping:** the path is percent-decoded and appended to `S3GATE_PREFIX`. Keys can never escape the prefix.
 - **Query strings:** the client's query string is ignored.
@@ -59,6 +60,7 @@ All settings are environment variables. `AWS_*` variables, `~/.aws` profiles and
 | `S3GATE_CHECK_EXISTS` | `true` | Check with `HEAD` that the object exists before redirecting. Turn off to save one S3 round-trip per request; missing objects then fail at S3 instead. |
 | `S3GATE_READINESS_PATH_EXISTS` | – | Object key that must exist for `/_s3gate/readyz` to report ready. Used as-is, not joined with the prefix. |
 | `S3GATE_READINESS_TIMEOUT` | `2` | Timeout in seconds for the readiness check (1–60) |
+| `S3GATE_REQUEST_TIMEOUT` | `30` | Maximum time in seconds to handle one request, including S3 calls and probes (1–3600) |
 | `S3GATE_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `S3GATE_LOG_FORMAT` | `json` | `json` or `text` |
 | `RUST_LOG` | `info` | Log filter. Set `debug` to also see probe requests and rejected paths. |
@@ -79,7 +81,7 @@ s3gate writes one `request completed` event per request, with these fields:
 | `user_agent` | Client user agent |
 | `bucket` | Bucket served from |
 | `key` | Object key the path mapped to |
-| `outcome` | `redirect`, `not_found`, `rejected`, `method_not_allowed`, `upstream_error` or `presign_error` |
+| `outcome` | `redirect`, `not_found`, `rejected`, `method_not_allowed`, `upstream_error`, `presign_error` or `timeout` |
 | `status` | HTTP status code |
 | `latency_ms` | Time to answer, in milliseconds |
 
