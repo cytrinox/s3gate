@@ -29,6 +29,23 @@ const DURATION_BUCKETS: [f64; 15] = [
     0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
 ];
 
+/// Object size buckets in bytes: powers of 4 from 1 KiB to 16 GiB.
+const OBJECT_SIZE_BUCKETS: [f64; 13] = [
+    1024.0,
+    4096.0,
+    16384.0,
+    65536.0,
+    262_144.0,
+    1_048_576.0,
+    4_194_304.0,
+    16_777_216.0,
+    67_108_864.0,
+    268_435_456.0,
+    1_073_741_824.0,
+    4_294_967_296.0,
+    17_179_869_184.0,
+];
+
 /// Owns the meter provider and the registry its exporter writes into.
 pub struct Metrics {
     registry: Registry,
@@ -89,6 +106,8 @@ pub struct HttpMetrics {
     s3_duration: Histogram<f64>,
     fetches: Counter<u64>,
     fetched_bytes: Counter<u64>,
+    object_size: Histogram<u64>,
+    rejected: Counter<u64>,
     /// `level1..levelN` label keys for the fetch counter; empty disables it.
     level_keys: Arc<[Key]>,
 }
@@ -123,6 +142,16 @@ impl HttpMetrics {
                     "Approximate traffic: object size of each successful GET redirect",
                 )
                 .build(),
+            object_size: meter
+                .u64_histogram("s3gate.approx.fetched.object.size")
+                .with_unit("By")
+                .with_description("Object sizes of successful GET redirects")
+                .with_boundaries(OBJECT_SIZE_BUCKETS.to_vec())
+                .build(),
+            rejected: meter
+                .u64_counter("s3gate.rejected.requests")
+                .with_description("Requests refused before contacting S3, by reason")
+                .build(),
             level_keys: (1..=fetch_levels)
                 .map(|level| Key::new(format!("level{level}")))
                 .collect(),
@@ -130,9 +159,12 @@ impl HttpMetrics {
     }
 
     /// Counts a successful download of `relative_path` (the object path below the prefix)
-    /// and adds its `size` to the traffic counter. Without fetch levels, only the unlabelled
-    /// traffic total is recorded.
+    /// and adds its `size` to the traffic counter and the size histogram. Without fetch
+    /// levels, only the unlabelled traffic total is recorded.
     pub fn record_fetch(&self, relative_path: &str, size: Option<u64>) {
+        if let Some(size) = size {
+            self.object_size.record(size, &[]);
+        }
         if self.level_keys.is_empty() {
             if let Some(size) = size {
                 self.fetched_bytes.add(size, &[]);
@@ -144,6 +176,11 @@ impl HttpMetrics {
         if let Some(size) = size {
             self.fetched_bytes.add(size, &attributes);
         }
+    }
+
+    /// Counts a request refused before any S3 call, e.g. `reason = "unsafe_segment"`.
+    pub fn record_rejected(&self, reason: &'static str) {
+        self.rejected.add(1, &[KeyValue::new("reason", reason)]);
     }
 
     pub fn record_request(&self, method: &Method, status: StatusCode, elapsed: Duration) {

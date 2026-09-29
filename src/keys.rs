@@ -22,6 +22,19 @@ pub enum KeyError {
     Reserved,
 }
 
+impl KeyError {
+    /// Short, bounded label for metrics.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::BadEncoding => "bad_encoding",
+            Self::NotAnObject => "not_an_object",
+            Self::UnsafeSegment => "unsafe_segment",
+            Self::ControlCharacter => "control_character",
+            Self::Reserved => "reserved",
+        }
+    }
+}
+
 /// Decodes a raw request path and joins it onto `prefix`.
 ///
 /// Segment checks run after decoding, so `%2e%2e` and `%2F` cannot be used to escape the
@@ -99,6 +112,15 @@ mod tests {
     fn rejects_control_characters() {
         assert_eq!(map_path("", "/a%0Ab"), Err(KeyError::ControlCharacter));
         assert_eq!(map_path("", "/a%00"), Err(KeyError::ControlCharacter));
+    }
+
+    #[test]
+    fn kinds_are_stable_metric_labels() {
+        assert_eq!(KeyError::BadEncoding.kind(), "bad_encoding");
+        assert_eq!(KeyError::NotAnObject.kind(), "not_an_object");
+        assert_eq!(KeyError::UnsafeSegment.kind(), "unsafe_segment");
+        assert_eq!(KeyError::ControlCharacter.kind(), "control_character");
+        assert_eq!(KeyError::Reserved.kind(), "reserved");
     }
 
     #[test]

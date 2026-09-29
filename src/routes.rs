@@ -10,7 +10,7 @@ use std::{
 };
 
 use axum::{
-    Router,
+    Extension, Router,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header},
     middleware::{self, Next},
@@ -90,6 +90,10 @@ struct Fetched {
     size: Option<u64>,
 }
 
+/// Response marker for a request refused before any S3 call, carrying the reason label.
+#[derive(Clone, Copy)]
+struct Rejected(&'static str);
+
 /// Response marker with the timing of the S3 call made while handling the request.
 #[derive(Clone, Copy)]
 struct S3Call {
@@ -137,6 +141,9 @@ async fn count_requests(
     }
     if let Some(fetched) = response.extensions().get::<Fetched>() {
         http_metrics.record_fetch(&fetched.path, fetched.size);
+    }
+    if let Some(Rejected(reason)) = response.extensions().get::<Rejected>() {
+        http_metrics.record_rejected(reason);
     }
     if let Some(call) = response.extensions().get::<S3Call>() {
         http_metrics.record_s3(call.operation, call.result, call.elapsed);
@@ -215,6 +222,7 @@ async fn gate<S: ObjectStore>(
             return (
                 StatusCode::METHOD_NOT_ALLOWED,
                 [(header::ALLOW, "GET, HEAD")],
+                Extension(Rejected("method_not_allowed")),
                 "Method Not Allowed\n",
             )
                 .into_response();
@@ -228,10 +236,11 @@ async fn gate<S: ObjectStore>(
         Err(err) => {
             span.record("outcome", "rejected");
             debug!(reason = %err, "path rejected");
-            return match err {
-                KeyError::BadEncoding => plain(StatusCode::BAD_REQUEST),
-                _ => plain(StatusCode::NOT_FOUND),
+            let status = match err {
+                KeyError::BadEncoding => StatusCode::BAD_REQUEST,
+                _ => StatusCode::NOT_FOUND,
             };
+            return (Extension(Rejected(err.kind())), plain(status)).into_response();
         }
     };
     span.record("key", key.as_str());
@@ -768,6 +777,7 @@ mod tests {
     }
 
     const BYTES: &str = "s3gate_approx_fetched_bytes_total";
+    const SIZES: &str = "s3gate_approx_fetched_object_size_bytes";
 
     #[tokio::test]
     async fn counts_fetches_by_path_level() {
@@ -830,6 +840,21 @@ mod tests {
         assert_eq!(
             bytes_for(r#"subpath="/foo.txt""#),
             Some("pub/foo.txt".len().to_string().as_str())
+        );
+
+        // The size histogram has no path labels and ignores HEAD and missing objects.
+        let size_sample = |suffix: &str| {
+            self::series(&exposition, &format!("{SIZES}_{suffix}"))
+                .first()
+                .and_then(|line| line.rsplit(' ').next())
+                .map(str::to_owned)
+        };
+        assert_eq!(size_sample("count").as_deref(), Some("3"), "{exposition}");
+        let total = "pub/foo/bar/baz".len() * 2 + "pub/foo.txt".len();
+        assert_eq!(size_sample("sum"), Some(total.to_string()), "{exposition}");
+        assert!(
+            !self::series(&exposition, &format!("{SIZES}_count"))[0].contains("level1"),
+            "{exposition}"
         );
     }
 
@@ -962,6 +987,48 @@ mod tests {
         // The fetch is counted, but its size is unknown.
         assert_eq!(fetch_series(&exposition).len(), 1, "{exposition}");
         assert!(series(&exposition, BYTES).is_empty(), "{exposition}");
+        assert!(!exposition.contains(SIZES), "{exposition}");
+    }
+
+    #[tokio::test]
+    async fn counts_rejections_by_reason() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = router(
+            AppState::new(store(&["a.txt"]), settings()),
+            HttpMetrics::new(&metrics.meter(), 0),
+        );
+        for (method, path, reason) in [
+            (Method::DELETE, "/a.txt", "method_not_allowed"),
+            (Method::GET, "/%FF", "bad_encoding"),
+            (Method::GET, "/dir/", "not_an_object"),
+            (Method::GET, "/../etc/passwd", "unsafe_segment"),
+            (Method::GET, "/a%0Ab", "control_character"),
+            (Method::GET, "/_s3gate/other", "reserved"),
+        ] {
+            let response = send_to(app.clone(), method, path).await;
+            assert!(response.status().is_client_error(), "{path} ({reason})");
+        }
+        // Neither a redirect nor a missing object is a rejection.
+        send_to(app.clone(), Method::GET, "/a.txt").await;
+        send_to(app, Method::GET, "/missing.txt").await;
+
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        let rejections = series(&exposition, "s3gate_rejected_requests_total");
+        assert_eq!(rejections.len(), 6, "{exposition}");
+        for reason in [
+            "method_not_allowed",
+            "bad_encoding",
+            "not_an_object",
+            "unsafe_segment",
+            "control_character",
+            "reserved",
+        ] {
+            let line = rejections
+                .iter()
+                .find(|line| line.contains(&format!("reason=\"{reason}\"")))
+                .unwrap_or_else(|| panic!("no series for {reason}: {exposition}"));
+            assert!(line.ends_with(" 1"), "{line}");
+        }
     }
 
     #[test]
