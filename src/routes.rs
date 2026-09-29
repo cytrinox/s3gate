@@ -34,7 +34,7 @@ pub struct Settings {
     pub bucket: String,
     pub prefix: String,
     pub presign_ttl: Duration,
-    pub check_exists: bool,
+    pub query_metadata: bool,
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
     pub request_timeout: Duration,
@@ -46,7 +46,7 @@ impl From<&Config> for Settings {
             bucket: config.bucket.clone(),
             prefix: config.prefix.clone(),
             presign_ttl: config.presign_ttl,
-            check_exists: config.check_exists,
+            query_metadata: config.query_metadata,
             readiness_path_exists: config.readiness_path_exists.clone(),
             readiness_timeout: config.readiness_timeout,
             request_timeout: config.request_timeout,
@@ -86,7 +86,7 @@ struct Probe;
 struct Fetched {
     /// Object path below the prefix.
     path: String,
-    /// Object size from the existence check; `None` when the check is disabled.
+    /// Object size from the metadata query; `None` when metadata is not queried.
     size: Option<u64>,
 }
 
@@ -236,7 +236,7 @@ async fn gate<S: ObjectStore>(
     };
     span.record("key", key.as_str());
 
-    let (head_call, size) = if settings.check_exists {
+    let (head_call, size) = if settings.query_metadata {
         match timed_head(&*state.store, &key).await {
             (Ok(info), call) => (Some(call), info.size),
             (Err(err), call) => return with_s3_call(store_failure(&span, err), call),
@@ -459,7 +459,7 @@ mod tests {
             bucket: "bucket".to_owned(),
             prefix: String::new(),
             presign_ttl: Duration::from_secs(300),
-            check_exists: true,
+            query_metadata: true,
             readiness_path_exists: None,
             readiness_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(30),
@@ -557,11 +557,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skips_head_when_existence_check_disabled() {
+    async fn skips_head_when_metadata_query_disabled() {
         let state = AppState::new(
             store(&[]),
             Settings {
-                check_exists: false,
+                query_metadata: false,
                 ..settings()
             },
         );
@@ -879,7 +879,7 @@ mod tests {
         let unchecked_app = app(
             store(&[]),
             Settings {
-                check_exists: false,
+                query_metadata: false,
                 ..settings()
             },
         );
@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(requests("200"), None);
 
         // One HeadObject per checked request plus the readiness check; nothing for the
-        // rejected path, the healthz probe or the app without existence checks.
+        // rejected path, the healthz probe or the app without metadata queries.
         let s3 = "s3gate_s3_request_duration_seconds_count";
         let s3_calls = |result: &str| {
             sample(
@@ -945,13 +945,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_traffic_without_existence_check() {
+    async fn no_traffic_without_metadata_query() {
         let metrics = crate::metrics::Metrics::new().unwrap();
         let app = router(
             AppState::new(
                 store(&["a.txt"]),
                 Settings {
-                    check_exists: false,
+                    query_metadata: false,
                     ..settings()
                 },
             ),

@@ -30,7 +30,7 @@ pub struct Config {
     pub secret_access_key: String,
     pub session_token: Option<String>,
     pub presign_ttl: Duration,
-    pub check_exists: bool,
+    pub query_metadata: bool,
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
     pub request_timeout: Duration,
@@ -89,8 +89,8 @@ impl Config {
                 .map(|value| parse_secs("S3GATE_PRESIGN_TTL", value, MAX_PRESIGN_TTL_SECS))
                 .transpose()?
                 .unwrap_or(Duration::from_secs(300)),
-            check_exists: get("S3GATE_CHECK_EXISTS")
-                .map(|value| parse_bool("S3GATE_CHECK_EXISTS", value))
+            query_metadata: get("S3GATE_QUERY_METADATA")
+                .map(|value| parse_bool("S3GATE_QUERY_METADATA", value))
                 .transpose()?
                 .unwrap_or(true),
             readiness_path_exists: get("S3GATE_READINESS_PATH_EXISTS")
@@ -160,7 +160,7 @@ impl fmt::Debug for Config {
                 &self.session_token.as_ref().map(|_| "<redacted>"),
             )
             .field("presign_ttl", &self.presign_ttl)
-            .field("check_exists", &self.check_exists)
+            .field("query_metadata", &self.query_metadata)
             .field("readiness_path_exists", &self.readiness_path_exists)
             .field("readiness_timeout", &self.readiness_timeout)
             .field("request_timeout", &self.request_timeout)
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(config.endpoint, None);
         assert_eq!(config.region, "us-east-1");
         assert_eq!(config.presign_ttl, Duration::from_secs(300));
-        assert!(config.check_exists);
+        assert!(config.query_metadata);
         assert!(!config.force_path_style);
         assert_eq!(config.readiness_path_exists, None);
         assert_eq!(config.readiness_timeout, Duration::from_secs(2));
@@ -325,7 +325,7 @@ mod tests {
             ("S3GATE_REGION", "eu-central-1"),
             ("S3GATE_SESSION_TOKEN", "tok"),
             ("S3GATE_PRESIGN_TTL", "60"),
-            ("S3GATE_CHECK_EXISTS", "off"),
+            ("S3GATE_QUERY_METADATA", "off"),
             ("S3GATE_READINESS_PATH_EXISTS", "/.ready"),
             ("S3GATE_READINESS_TIMEOUT", "5"),
             ("S3GATE_REQUEST_TIMEOUT", "12"),
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(config.region, "eu-central-1");
         assert_eq!(config.session_token.as_deref(), Some("tok"));
         assert_eq!(config.presign_ttl, Duration::from_secs(60));
-        assert!(!config.check_exists);
+        assert!(!config.query_metadata);
         assert_eq!(config.readiness_path_exists.as_deref(), Some(".ready"));
         assert_eq!(config.readiness_timeout, Duration::from_secs(5));
         assert_eq!(config.request_timeout, Duration::from_secs(12));

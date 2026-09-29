@@ -96,8 +96,8 @@ spec:
                   optional: true
             - name: S3GATE_PRESIGN_TTL
               value: {{ .Values.config.presignTtl | quote }}
-            - name: S3GATE_CHECK_EXISTS
-              value: {{ .Values.config.checkExists | quote }}
+            - name: S3GATE_QUERY_METADATA
+              value: {{ .Values.config.queryMetadata | quote }}
             - name: S3GATE_REQUEST_TIMEOUT
               value: {{ .Values.config.requestTimeout | quote }}
             {{- with .Values.config.readinessPathExists }}

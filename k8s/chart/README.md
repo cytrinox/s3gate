@@ -65,7 +65,7 @@ The full list is in [values.yaml](values.yaml).
 | `credentials.existingSecret` | – | Secret with `S3GATE_ACCESS_KEY_ID`, `S3GATE_SECRET_ACCESS_KEY` and optionally `S3GATE_SESSION_TOKEN` |
 | `credentials.accessKeyId` / `secretAccessKey` / `sessionToken` | – | Used to create a Secret when `existingSecret` is empty |
 | `config.presignTtl` | `300` | Presigned URL lifetime in seconds |
-| `config.checkExists` | `true` | HEAD the object before redirecting |
+| `config.queryMetadata` | `true` | Query object metadata before redirecting: early 404 for missing objects and the size for the traffic metric |
 | `config.requestTimeout` | `30` | Per-request timeout in seconds |
 | `config.readinessPathExists` | – | Object that must exist for the pod to be ready |
 | `config.readinessTimeout` | `2` | Keep below `readinessProbe.timeoutSeconds` |

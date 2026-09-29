@@ -41,8 +41,9 @@ credentials:
 config:
   # Presigned URL lifetime in seconds (1-604800).
   presignTtl: 300
-  # HEAD the object before redirecting; missing objects return 404 from s3gate.
-  checkExists: true
+  # Query object metadata (HeadObject) before redirecting. Enables the early 404 for
+  # missing objects and the object size for s3gate_approx_fetched_bytes_total.
+  queryMetadata: true
   # Maximum time in seconds to handle one request (1-3600).
   requestTimeout: 30
   # Object key that must exist for the pod to report ready. Empty = always ready.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Daniel Vogelbacher <daniel@chaospixel.com>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! S3 access: existence checks and presigned URL generation.
+//! S3 access: object metadata queries and presigned URL generation.
 
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ pub enum StoreError {
     Presign(String),
 }
 
-/// What an existence check learned about an object.
+/// What a metadata query learned about an object.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ObjectInfo {
     /// Content length in bytes, if S3 reported one.

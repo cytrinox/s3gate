@@ -66,7 +66,7 @@ async fn run(config: Config) -> std::io::Result<()> {
         region = %config.region,
         presign_ttl_s = config.presign_ttl.as_secs(),
         request_timeout_s = config.request_timeout.as_secs(),
-        check_exists = config.check_exists,
+        query_metadata = config.query_metadata,
         readiness_path_exists = config.readiness_path_exists.as_deref().unwrap_or("-"),
         metrics_enabled = config.metrics_enabled,
         metrics_fetch_levels = config.metrics_fetch_levels,
