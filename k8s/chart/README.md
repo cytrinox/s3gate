@@ -78,6 +78,8 @@ The full list is in [values.yaml](values.yaml).
 | `metrics.port` | `9090` | Metrics port; must differ from 8080 |
 | `metrics.fetchLevels` | `0` | Path depth for `s3gate_fetches_total`; 0 disables it |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor; requires `metrics.enabled` |
+| `metrics.grafanaDashboard.enabled` | `false` | Install the s3gate Grafana dashboard as a ConfigMap for the Grafana dashboard sidecar; requires `metrics.enabled`. The dashboard covers all s3gate deployments, so enable it in one release only. |
+| `metrics.grafanaDashboard.namespace` / `labels` / `annotations` | release namespace / `grafana_dashboard: "1"` / – | Where the ConfigMap goes and how the sidecar finds it. The default label matches kube-prometheus-stack. |
 | `metrics.serviceMonitor.*` | see values | `namespace`, `interval`, `scrapeTimeout`, `honorLabels`, `labels`, `metricRelabelings`, `relabelings` |
 | `ingress.*` | disabled | Standard Ingress. Gets the Traefik middleware annotation automatically when `traefik.middlewares.enabled` |
 | `gateway.enabled` | `false` | Render an HTTPRoute (Gateway API v1) attached to an existing Gateway |

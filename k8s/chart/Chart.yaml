@@ -2,7 +2,7 @@ apiVersion: v2
 name: s3gate
 description: HTTP gate that answers requests with redirects to presigned S3 URLs
 type: application
-version: 0.5.0
+version: 0.6.0
 # Default image tag. Override with image.tag (e.g. "latest") until a matching v* tag is published.
 appVersion: "0.4.0"
 kubeVersion: ">=1.33.0-0"

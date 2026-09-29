@@ -148,6 +148,19 @@ metrics:
     labels: {}
     metricRelabelings: []
     relabelings: []
+  # Grafana dashboard (dashboards/s3gate-dashboard.json) as a ConfigMap for the Grafana
+  # dashboard sidecar, e.g. from kube-prometheus-stack. Requires metrics.enabled.
+  # The dashboard covers all s3gate deployments, so enable it in one release only.
+  grafanaDashboard:
+    enabled: false
+    # Namespace for the ConfigMap, e.g. the one the sidecar watches. Defaults to the
+    # release namespace.
+    namespace: ""
+    # Labels the sidecar selects on. kube-prometheus-stack uses grafana_dashboard: "1".
+    labels:
+      grafana_dashboard: "1"
+    # E.g. a folder annotation, if the sidecar is configured with folderAnnotation.
+    annotations: {}
 
 service:
   type: ClusterIP

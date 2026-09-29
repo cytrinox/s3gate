@@ -96,6 +96,9 @@ Empty when traefik.middlewares.enabled is false.
 {{- if and .Values.metrics.serviceMonitor.enabled (not .Values.metrics.enabled) }}
 {{- fail "metrics.serviceMonitor.enabled requires metrics.enabled" }}
 {{- end }}
+{{- if and .Values.metrics.grafanaDashboard.enabled (not .Values.metrics.enabled) }}
+{{- fail "metrics.grafanaDashboard.enabled requires metrics.enabled" }}
+{{- end }}
 {{- if eq (int .Values.metrics.port) 8080 }}
 {{- fail "metrics.port must differ from the application port 8080" }}
 {{- end }}

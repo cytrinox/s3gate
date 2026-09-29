@@ -122,6 +122,20 @@ Paths with fewer segments than N get empty labels for the missing levels. For ex
 
 Every distinct prefix becomes its own time series. A level deep enough to reach object names therefore creates one series per downloaded object, so choose N to match the directory layout.
 
+### Grafana dashboard
+
+[k8s/chart/dashboards/s3gate-dashboard.json](k8s/chart/dashboards/s3gate-dashboard.json) covers all of these metrics. Import it in Grafana via *Dashboards → New → Import* and pick a Prometheus data source. The Helm chart can also install it automatically (`metrics.grafanaDashboard.enabled`, see the [chart README](k8s/chart/README.md)). It has five rows:
+
+| Row | Contents |
+|---|---|
+| Overview | Request rate, redirect ratio, 5xx ratio, p95 latency, approximate traffic, running versions |
+| HTTP | Requests by status and method, latency percentiles and heatmap |
+| S3 | S3 calls by result, S3 latency percentiles, S3 error ratio |
+| Downloads & traffic | Downloads per second, approximate throughput, average object size, object size heatmap, top prefixes by downloads and by traffic |
+| Rejections | Rejected requests by reason over time and in the selected range |
+
+The `namespace` and `instance` variables filter by the labels Prometheus adds when scraping. Top prefixes need `S3GATE_METRICS_FETCH_LEVELS > 0`, and the traffic and object size panels need `S3GATE_QUERY_METADATA=true`.
+
 ## Build and run
 
 Rust 1.98 is pinned in `rust-toolchain.toml`.

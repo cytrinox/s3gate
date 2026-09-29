@@ -1,0 +1,19 @@
+{{- if and .Values.metrics.enabled .Values.metrics.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "s3gate.fullname" . }}-dashboard
+  namespace: {{ .Values.metrics.grafanaDashboard.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "s3gate.labels" . | nindent 4 }}
+    {{- with .Values.metrics.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.grafanaDashboard.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  s3gate-dashboard.json: |-
+    {{- .Files.Get "dashboards/s3gate-dashboard.json" | nindent 4 }}
+{{- end }}
