@@ -35,6 +35,13 @@ pub enum StoreError {
     Presign(String),
 }
 
+/// What an existence check learned about an object.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ObjectInfo {
+    /// Content length in bytes, if S3 reported one.
+    pub size: Option<u64>,
+}
+
 impl StoreError {
     /// Short, bounded label for metrics.
     pub fn kind(&self) -> &'static str {
@@ -49,7 +56,7 @@ impl StoreError {
 
 pub trait ObjectStore: Send + Sync + 'static {
     /// Succeeds if the object exists.
-    fn head(&self, key: &str) -> impl Future<Output = Result<(), StoreError>> + Send;
+    fn head(&self, key: &str) -> impl Future<Output = Result<ObjectInfo, StoreError>> + Send;
 
     /// Returns a presigned URL for `method` on `key`, valid for `ttl`.
     fn presign(
@@ -110,15 +117,20 @@ fn build_client(config: &Config, endpoint: Option<&str>) -> Client {
 }
 
 impl ObjectStore for S3Store {
-    async fn head(&self, key: &str) -> Result<(), StoreError> {
-        self.client
+    async fn head(&self, key: &str) -> Result<ObjectInfo, StoreError> {
+        let output = self
+            .client
             .head_object()
             .bucket(&self.bucket)
             .key(key)
             .send()
             .await
-            .map(|_| ())
-            .map_err(classify_head_error)
+            .map_err(classify_head_error)?;
+        Ok(ObjectInfo {
+            size: output
+                .content_length()
+                .and_then(|length| u64::try_from(length).ok()),
+        })
     }
 
     async fn presign(

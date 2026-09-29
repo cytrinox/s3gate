@@ -100,6 +100,13 @@ With `S3GATE_METRICS_ENABLED=true`, s3gate serves `GET /metrics` in the Promethe
 | `s3gate_http_request_duration_seconds` | histogram | `method`, `status_code` | Time to answer a request on the main port, measured inside s3gate (including the S3 existence check). Same scope as `s3gate_http_requests_total`. Buckets from 1 ms to 60 s. |
 | `s3gate_s3_request_duration_seconds` | histogram | `operation` (`HeadObject`), `result` (`ok`, `not_found`, `forbidden`, `timeout`, `error`) | Latency of calls to S3: the existence check before each redirect (only with `S3GATE_CHECK_EXISTS=true`) and the readiness check (`S3GATE_READINESS_PATH_EXISTS`). A readiness check that hits `S3GATE_READINESS_TIMEOUT` is recorded as `timeout` with that duration. Signing presigned URLs is local and not an S3 call. Buckets from 1 ms to 60 s. |
 | `s3gate_fetches_total` | counter | `level1`…`levelN`, `subpath` | Successful `GET` redirects, grouped by the first N path segments (N = `S3GATE_METRICS_FETCH_LEVELS`). `HEAD`, 404s, errors and timeouts are not counted. |
+| `s3gate_approx_fetched_bytes_total` | counter | none, or `level1`…`levelN`, `subpath` like `s3gate_fetches_total` | Approximate traffic: the object size (from the existence check) added for every successful `GET` redirect. Without `S3GATE_METRICS_FETCH_LEVELS` it is one total for the bucket. Requires `S3GATE_CHECK_EXISTS=true`; otherwise the size is unknown and nothing is recorded. |
+
+`s3gate_approx_fetched_bytes_total` assumes that every redirected client downloads the whole object once. The real traffic at S3 can differ:
+- **Lower:** clients that don't follow the redirect, abort the download, or fetch only a byte range.
+- **Higher:** clients that reuse a presigned URL several times within `S3GATE_PRESIGN_TTL`. Those downloads never reach s3gate.
+
+For exact numbers, use the S3 provider's billing or access logs.
 
 For `s3gate_fetches_total`, the labels come from the object path below `S3GATE_PREFIX`. A `GET /foo/bar/baz` is labelled:
 

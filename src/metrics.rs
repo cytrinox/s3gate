@@ -88,6 +88,7 @@ pub struct HttpMetrics {
     request_duration: Histogram<f64>,
     s3_duration: Histogram<f64>,
     fetches: Counter<u64>,
+    fetched_bytes: Counter<u64>,
     /// `level1..levelN` label keys for the fetch counter; empty disables it.
     level_keys: Arc<[Key]>,
 }
@@ -115,17 +116,33 @@ impl HttpMetrics {
                 .u64_counter("s3gate.fetches")
                 .with_description("Successful GET redirects by path prefix")
                 .build(),
+            fetched_bytes: meter
+                .u64_counter("s3gate.approx.fetched")
+                .with_unit("By")
+                .with_description(
+                    "Approximate traffic: object size of each successful GET redirect",
+                )
+                .build(),
             level_keys: (1..=fetch_levels)
                 .map(|level| Key::new(format!("level{level}")))
                 .collect(),
         }
     }
 
-    /// Counts a successful download of `relative_path` (the object path below the prefix).
-    pub fn record_fetch(&self, relative_path: &str) {
-        if !self.level_keys.is_empty() {
-            self.fetches
-                .add(1, &fetch_attributes(relative_path, &self.level_keys));
+    /// Counts a successful download of `relative_path` (the object path below the prefix)
+    /// and adds its `size` to the traffic counter. Without fetch levels, only the unlabelled
+    /// traffic total is recorded.
+    pub fn record_fetch(&self, relative_path: &str, size: Option<u64>) {
+        if self.level_keys.is_empty() {
+            if let Some(size) = size {
+                self.fetched_bytes.add(size, &[]);
+            }
+            return;
+        }
+        let attributes = fetch_attributes(relative_path, &self.level_keys);
+        self.fetches.add(1, &attributes);
+        if let Some(size) = size {
+            self.fetched_bytes.add(size, &attributes);
         }
     }
 

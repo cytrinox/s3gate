@@ -27,7 +27,7 @@ use crate::{
     config::Config,
     keys::{self, KeyError},
     metrics::HttpMetrics,
-    store::{ObjectStore, PresignMethod, StoreError},
+    store::{ObjectInfo, ObjectStore, PresignMethod, StoreError},
 };
 
 pub struct Settings {
@@ -81,9 +81,14 @@ impl<S> Clone for AppState<S> {
 #[derive(Clone, Copy)]
 struct Probe;
 
-/// Response marker for a successful GET redirect, carrying the object path below the prefix.
+/// Response marker for a successful GET redirect.
 #[derive(Clone)]
-struct Fetched(String);
+struct Fetched {
+    /// Object path below the prefix.
+    path: String,
+    /// Object size from the existence check; `None` when the check is disabled.
+    size: Option<u64>,
+}
 
 /// Response marker with the timing of the S3 call made while handling the request.
 #[derive(Clone, Copy)]
@@ -130,8 +135,8 @@ async fn count_requests(
     if response.extensions().get::<Probe>().is_none() {
         http_metrics.record_request(&method, response.status(), elapsed);
     }
-    if let Some(Fetched(path)) = response.extensions().get::<Fetched>() {
-        http_metrics.record_fetch(path);
+    if let Some(fetched) = response.extensions().get::<Fetched>() {
+        http_metrics.record_fetch(&fetched.path, fetched.size);
     }
     if let Some(call) = response.extensions().get::<S3Call>() {
         http_metrics.record_s3(call.operation, call.result, call.elapsed);
@@ -168,7 +173,7 @@ async fn readyz<S: ObjectStore>(State(state): State<AppState<S>>) -> Response {
         return probe(StatusCode::OK, "ready\n");
     };
     match tokio::time::timeout(settings.readiness_timeout, timed_head(&*state.store, key)).await {
-        Ok((Ok(()), call)) => with_s3_call(probe(StatusCode::OK, "ready\n"), call),
+        Ok((Ok(_), call)) => with_s3_call(probe(StatusCode::OK, "ready\n"), call),
         Ok((Err(err), call)) => {
             warn!(key, error = %err, "readiness check failed");
             with_s3_call(probe(StatusCode::SERVICE_UNAVAILABLE, "not ready\n"), call)
@@ -231,17 +236,16 @@ async fn gate<S: ObjectStore>(
     };
     span.record("key", key.as_str());
 
-    let head_call = if settings.check_exists {
-        let (result, call) = timed_head(&*state.store, &key).await;
-        if let Err(err) = result {
-            return with_s3_call(store_failure(&span, err), call);
+    let (head_call, size) = if settings.check_exists {
+        match timed_head(&*state.store, &key).await {
+            (Ok(info), call) => (Some(call), info.size),
+            (Err(err), call) => return with_s3_call(store_failure(&span, err), call),
         }
-        Some(call)
     } else {
-        None
+        (None, None)
     };
 
-    let mut response = redirect(&state, &span, presign_method, &key).await;
+    let mut response = redirect(&state, &span, presign_method, &key, size).await;
     if let Some(call) = head_call {
         response.extensions_mut().insert(call);
     }
@@ -253,6 +257,7 @@ async fn redirect<S: ObjectStore>(
     span: &Span,
     presign_method: PresignMethod,
     key: &str,
+    size: Option<u64>,
 ) -> Response {
     let settings = &state.settings;
     let url = match state
@@ -281,20 +286,24 @@ async fn redirect<S: ObjectStore>(
         .into_response();
     if presign_method == PresignMethod::Get {
         let relative = key.strip_prefix(settings.prefix.as_str()).unwrap_or(key);
-        response
-            .extensions_mut()
-            .insert(Fetched(relative.to_owned()));
+        response.extensions_mut().insert(Fetched {
+            path: relative.to_owned(),
+            size,
+        });
     }
     response
 }
 
 /// Runs a HeadObject call and measures it.
-async fn timed_head<S: ObjectStore>(store: &S, key: &str) -> (Result<(), StoreError>, S3Call) {
+async fn timed_head<S: ObjectStore>(
+    store: &S,
+    key: &str,
+) -> (Result<ObjectInfo, StoreError>, S3Call) {
     let started = Instant::now();
     let result = store.head(key).await;
     let call = S3Call {
         operation: "HeadObject",
-        result: result.as_ref().map_or_else(StoreError::kind, |()| "ok"),
+        result: result.as_ref().map_or_else(StoreError::kind, |_| "ok"),
         elapsed: started.elapsed(),
     };
     (result, call)
@@ -414,14 +423,17 @@ mod tests {
     }
 
     impl ObjectStore for MockStore {
-        async fn head(&self, key: &str) -> Result<(), StoreError> {
+        /// Reports the key length as object size.
+        async fn head(&self, key: &str) -> Result<ObjectInfo, StoreError> {
             self.head_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(delay) = self.head_delay {
                 tokio::time::sleep(delay).await;
             }
             match &self.head_error {
                 Some(err) => Err(err.clone()),
-                None if self.objects.contains(&key) => Ok(()),
+                None if self.objects.contains(&key) => Ok(ObjectInfo {
+                    size: Some(key.len() as u64),
+                }),
                 None => Err(StoreError::NotFound),
             }
         }
@@ -744,11 +756,18 @@ mod tests {
     }
 
     fn fetch_series(exposition: &str) -> Vec<&str> {
+        series(exposition, "s3gate_fetches_total")
+    }
+
+    fn series<'a>(exposition: &'a str, name: &str) -> Vec<&'a str> {
+        let prefix = format!("{name}{{");
         exposition
             .lines()
-            .filter(|line| line.starts_with("s3gate_fetches_total{"))
+            .filter(|line| line.starts_with(&prefix))
             .collect()
     }
+
+    const BYTES: &str = "s3gate_approx_fetched_bytes_total";
 
     #[tokio::test]
     async fn counts_fetches_by_path_level() {
@@ -793,6 +812,25 @@ mod tests {
             "{exposition}"
         );
         assert!(!series.iter().any(|line| line.contains("pub")));
+
+        // Traffic uses the same labels; the mock reports the key length as size.
+        let bytes = self::series(&exposition, BYTES);
+        assert_eq!(bytes.len(), 2, "{exposition}");
+        let bytes_for = |labels: &str| {
+            bytes
+                .iter()
+                .find(|line| line.contains(labels))
+                .and_then(|line| line.rsplit(' ').next())
+        };
+        let per_fetch = "pub/foo/bar/baz".len() * 2;
+        assert_eq!(
+            bytes_for(r#"subpath="/foo/bar""#),
+            Some(per_fetch.to_string().as_str())
+        );
+        assert_eq!(
+            bytes_for(r#"subpath="/foo.txt""#),
+            Some("pub/foo.txt".len().to_string().as_str())
+        );
     }
 
     #[tokio::test]
@@ -894,9 +932,36 @@ mod tests {
             AppState::new(store(&["a.txt"]), settings()),
             HttpMetrics::new(&metrics.meter(), 0),
         );
+        send_to(app.clone(), Method::GET, "/a.txt").await;
         send_to(app, Method::GET, "/a.txt").await;
         let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
         assert!(fetch_series(&exposition).is_empty(), "{exposition}");
+
+        // The traffic total is still recorded, without path labels.
+        let bytes = series(&exposition, BYTES);
+        assert_eq!(bytes.len(), 1, "{exposition}");
+        assert!(!bytes[0].contains("level1"), "{exposition}");
+        assert!(bytes[0].ends_with(" 10"), "{exposition}");
+    }
+
+    #[tokio::test]
+    async fn no_traffic_without_existence_check() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = router(
+            AppState::new(
+                store(&["a.txt"]),
+                Settings {
+                    check_exists: false,
+                    ..settings()
+                },
+            ),
+            HttpMetrics::new(&metrics.meter(), 1),
+        );
+        send_to(app, Method::GET, "/a.txt").await;
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        // The fetch is counted, but its size is unknown.
+        assert_eq!(fetch_series(&exposition).len(), 1, "{exposition}");
+        assert!(series(&exposition, BYTES).is_empty(), "{exposition}");
     }
 
     #[test]
