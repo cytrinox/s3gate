@@ -35,6 +35,18 @@ pub enum StoreError {
     Presign(String),
 }
 
+impl StoreError {
+    /// Short, bounded label for metrics.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::Forbidden => "forbidden",
+            Self::Timeout => "timeout",
+            Self::Upstream(_) | Self::Presign(_) => "error",
+        }
+    }
+}
+
 pub trait ObjectStore: Send + Sync + 'static {
     /// Succeeds if the object exists.
     fn head(&self, key: &str) -> impl Future<Output = Result<(), StoreError>> + Send;

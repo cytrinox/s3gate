@@ -4,7 +4,7 @@
 //! Prometheus metrics: an OpenTelemetry meter provider exporting into a private registry,
 //! served on a dedicated listener.
 
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -15,13 +15,19 @@ use axum::{
 };
 use opentelemetry::{
     Key, KeyValue,
-    metrics::{Counter, Meter, MeterProvider},
+    metrics::{Counter, Histogram, Meter, MeterProvider},
 };
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use prometheus::{Encoder, Registry, TextEncoder};
 use tracing::error;
 
 const METER_NAME: &str = env!("CARGO_PKG_NAME");
+
+/// Latency buckets in seconds for requests and S3 calls: from millisecond answers up to
+/// the timeout range.
+const DURATION_BUCKETS: [f64; 15] = [
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+];
 
 /// Owns the meter provider and the registry its exporter writes into.
 pub struct Metrics {
@@ -79,6 +85,8 @@ pub fn disabled_meter() -> Meter {
 #[derive(Clone)]
 pub struct HttpMetrics {
     requests: Counter<u64>,
+    request_duration: Histogram<f64>,
+    s3_duration: Histogram<f64>,
     fetches: Counter<u64>,
     /// `level1..levelN` label keys for the fetch counter; empty disables it.
     level_keys: Arc<[Key]>,
@@ -90,6 +98,18 @@ impl HttpMetrics {
             requests: meter
                 .u64_counter("s3gate.http.requests")
                 .with_description("Count of HTTP requests by method and status code")
+                .build(),
+            request_duration: meter
+                .f64_histogram("s3gate.http.request.duration")
+                .with_unit("s")
+                .with_description("HTTP request latency by method and status code")
+                .with_boundaries(DURATION_BUCKETS.to_vec())
+                .build(),
+            s3_duration: meter
+                .f64_histogram("s3gate.s3.request.duration")
+                .with_unit("s")
+                .with_description("Latency of S3 API calls by operation and result")
+                .with_boundaries(DURATION_BUCKETS.to_vec())
                 .build(),
             fetches: meter
                 .u64_counter("s3gate.fetches")
@@ -109,12 +129,23 @@ impl HttpMetrics {
         }
     }
 
-    pub fn record_request(&self, method: &Method, status: StatusCode) {
-        self.requests.add(
-            1,
+    pub fn record_request(&self, method: &Method, status: StatusCode, elapsed: Duration) {
+        let attributes = [
+            KeyValue::new("method", method_label(method)),
+            KeyValue::new("status_code", i64::from(status.as_u16())),
+        ];
+        self.requests.add(1, &attributes);
+        self.request_duration
+            .record(elapsed.as_secs_f64(), &attributes);
+    }
+
+    /// Records one S3 API call, e.g. `operation = "HeadObject"`, `result = "not_found"`.
+    pub fn record_s3(&self, operation: &'static str, result: &'static str, elapsed: Duration) {
+        self.s3_duration.record(
+            elapsed.as_secs_f64(),
             &[
-                KeyValue::new("method", method_label(method)),
-                KeyValue::new("status_code", i64::from(status.as_u16())),
+                KeyValue::new("operation", operation),
+                KeyValue::new("result", result),
             ],
         );
     }

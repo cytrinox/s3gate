@@ -3,7 +3,11 @@
 
 //! HTTP surface: Kubernetes probes, the presign-and-redirect gate, and access logging.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Router,
@@ -81,6 +85,14 @@ struct Probe;
 #[derive(Clone)]
 struct Fetched(String);
 
+/// Response marker with the timing of the S3 call made while handling the request.
+#[derive(Clone, Copy)]
+struct S3Call {
+    operation: &'static str,
+    result: &'static str,
+    elapsed: Duration,
+}
+
 pub fn router<S: ObjectStore>(state: AppState<S>, http_metrics: HttpMetrics) -> Router {
     let request_timeout = state.settings.request_timeout;
     Router::new()
@@ -112,12 +124,17 @@ async fn count_requests(
     next: Next,
 ) -> Response {
     let method = request.method().clone();
+    let started = Instant::now();
     let response = next.run(request).await;
+    let elapsed = started.elapsed();
     if response.extensions().get::<Probe>().is_none() {
-        http_metrics.record_request(&method, response.status());
+        http_metrics.record_request(&method, response.status(), elapsed);
     }
     if let Some(Fetched(path)) = response.extensions().get::<Fetched>() {
         http_metrics.record_fetch(path);
+    }
+    if let Some(call) = response.extensions().get::<S3Call>() {
+        http_metrics.record_s3(call.operation, call.result, call.elapsed);
     }
     response
 }
@@ -150,11 +167,11 @@ async fn readyz<S: ObjectStore>(State(state): State<AppState<S>>) -> Response {
     let Some(key) = settings.readiness_path_exists.as_deref() else {
         return probe(StatusCode::OK, "ready\n");
     };
-    match tokio::time::timeout(settings.readiness_timeout, state.store.head(key)).await {
-        Ok(Ok(())) => probe(StatusCode::OK, "ready\n"),
-        Ok(Err(err)) => {
+    match tokio::time::timeout(settings.readiness_timeout, timed_head(&*state.store, key)).await {
+        Ok((Ok(()), call)) => with_s3_call(probe(StatusCode::OK, "ready\n"), call),
+        Ok((Err(err), call)) => {
             warn!(key, error = %err, "readiness check failed");
-            probe(StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+            with_s3_call(probe(StatusCode::SERVICE_UNAVAILABLE, "not ready\n"), call)
         }
         Err(_) => {
             warn!(
@@ -162,7 +179,12 @@ async fn readyz<S: ObjectStore>(State(state): State<AppState<S>>) -> Response {
                 timeout_ms = settings.readiness_timeout.as_millis(),
                 "readiness check timed out"
             );
-            probe(StatusCode::SERVICE_UNAVAILABLE, "not ready\n")
+            let call = S3Call {
+                operation: "HeadObject",
+                result: StoreError::Timeout.kind(),
+                elapsed: settings.readiness_timeout,
+            };
+            with_s3_call(probe(StatusCode::SERVICE_UNAVAILABLE, "not ready\n"), call)
         }
     }
 }
@@ -209,23 +231,41 @@ async fn gate<S: ObjectStore>(
     };
     span.record("key", key.as_str());
 
-    if settings.check_exists
-        && let Err(err) = state.store.head(&key).await
-    {
-        return store_failure(&span, err);
-    }
+    let head_call = if settings.check_exists {
+        let (result, call) = timed_head(&*state.store, &key).await;
+        if let Err(err) = result {
+            return with_s3_call(store_failure(&span, err), call);
+        }
+        Some(call)
+    } else {
+        None
+    };
 
+    let mut response = redirect(&state, &span, presign_method, &key).await;
+    if let Some(call) = head_call {
+        response.extensions_mut().insert(call);
+    }
+    response
+}
+
+async fn redirect<S: ObjectStore>(
+    state: &AppState<S>,
+    span: &Span,
+    presign_method: PresignMethod,
+    key: &str,
+) -> Response {
+    let settings = &state.settings;
     let url = match state
         .store
-        .presign(presign_method, &key, settings.presign_ttl)
+        .presign(presign_method, key, settings.presign_ttl)
         .await
     {
         Ok(url) => url,
-        Err(err) => return store_failure(&span, err),
+        Err(err) => return store_failure(span, err),
     };
     let Ok(location) = HeaderValue::try_from(url) else {
         return store_failure(
-            &span,
+            span,
             StoreError::Presign("presigned URL is not a valid header value".to_owned()),
         );
     };
@@ -240,11 +280,28 @@ async fn gate<S: ObjectStore>(
     )
         .into_response();
     if presign_method == PresignMethod::Get {
-        let relative = key.strip_prefix(settings.prefix.as_str()).unwrap_or(&key);
+        let relative = key.strip_prefix(settings.prefix.as_str()).unwrap_or(key);
         response
             .extensions_mut()
             .insert(Fetched(relative.to_owned()));
     }
+    response
+}
+
+/// Runs a HeadObject call and measures it.
+async fn timed_head<S: ObjectStore>(store: &S, key: &str) -> (Result<(), StoreError>, S3Call) {
+    let started = Instant::now();
+    let result = store.head(key).await;
+    let call = S3Call {
+        operation: "HeadObject",
+        result: result.as_ref().map_or_else(StoreError::kind, |()| "ok"),
+        elapsed: started.elapsed(),
+    };
+    (result, call)
+}
+
+fn with_s3_call(mut response: Response, call: S3Call) -> Response {
+    response.extensions_mut().insert(call);
     response
 }
 
@@ -353,6 +410,7 @@ mod tests {
         head_error: Option<StoreError>,
         head_delay: Option<Duration>,
         head_calls: AtomicUsize,
+        presign_error: Option<StoreError>,
     }
 
     impl ObjectStore for MockStore {
@@ -374,6 +432,9 @@ mod tests {
             key: &str,
             ttl: Duration,
         ) -> Result<String, StoreError> {
+            if let Some(err) = &self.presign_error {
+                return Err(err.clone());
+            }
             Ok(format!(
                 "https://s3.test/bucket/{key}?method={method:?}&ttl={}",
                 ttl.as_secs()
@@ -732,6 +793,98 @@ mod tests {
             "{exposition}"
         );
         assert!(!series.iter().any(|line| line.contains("pub")));
+    }
+
+    #[tokio::test]
+    async fn records_request_and_s3_latency() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let app = |store: MockStore, settings: Settings| {
+            router(
+                AppState::new(store, settings),
+                HttpMetrics::new(&metrics.meter(), 0),
+            )
+        };
+        let ok_app = app(
+            store(&["a.txt", ".ready"]),
+            Settings {
+                readiness_path_exists: Some(".ready".to_owned()),
+                ..settings()
+            },
+        );
+        send_to(ok_app.clone(), Method::GET, "/a.txt").await;
+        send_to(ok_app.clone(), Method::GET, "/a.txt").await;
+        send_to(ok_app.clone(), Method::HEAD, "/a.txt").await;
+        send_to(ok_app.clone(), Method::GET, "/missing.txt").await;
+        send_to(ok_app.clone(), Method::GET, "/_s3gate/healthz").await;
+        send_to(ok_app.clone(), Method::GET, "/_s3gate/readyz").await;
+        send_to(ok_app, Method::GET, "/../etc").await;
+
+        let forbidden_app = app(
+            MockStore {
+                head_error: Some(StoreError::Forbidden),
+                ..store(&[])
+            },
+            settings(),
+        );
+        send_to(forbidden_app, Method::GET, "/a.txt").await;
+
+        let presign_failing_app = app(
+            MockStore {
+                presign_error: Some(StoreError::Presign("boom".into())),
+                ..store(&["a.txt"])
+            },
+            settings(),
+        );
+        let response = send_to(presign_failing_app, Method::GET, "/a.txt").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let unchecked_app = app(
+            store(&[]),
+            Settings {
+                check_exists: false,
+                ..settings()
+            },
+        );
+        send_to(unchecked_app, Method::GET, "/a.txt").await;
+
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        let sample = |name: &str, labels: &[&str]| {
+            exposition
+                .lines()
+                .filter(|line| line.starts_with(&format!("{name}{{")))
+                .find(|line| labels.iter().all(|label| line.contains(label)))
+                .and_then(|line| line.rsplit(' ').next())
+                .map(str::to_owned)
+        };
+
+        let request = "s3gate_http_request_duration_seconds_count";
+        let requests = |status: &str| {
+            sample(
+                request,
+                &[r#"method="GET""#, &format!("status_code=\"{status}\"")],
+            )
+        };
+        assert_eq!(requests("302").as_deref(), Some("3"), "{exposition}");
+        // The missing object and the rejected traversal path.
+        assert_eq!(requests("404").as_deref(), Some("2"));
+        assert_eq!(requests("502").as_deref(), Some("1"));
+        assert_eq!(requests("500").as_deref(), Some("1"));
+        // Probes are not measured.
+        assert_eq!(requests("200"), None);
+
+        // One HeadObject per checked request plus the readiness check; nothing for the
+        // rejected path, the healthz probe or the app without existence checks.
+        let s3 = "s3gate_s3_request_duration_seconds_count";
+        let s3_calls = |result: &str| {
+            sample(
+                s3,
+                &[r#"operation="HeadObject""#, &format!("result=\"{result}\"")],
+            )
+        };
+        assert_eq!(s3_calls("ok").as_deref(), Some("5"), "{exposition}");
+        assert_eq!(s3_calls("not_found").as_deref(), Some("1"));
+        assert_eq!(s3_calls("forbidden").as_deref(), Some("1"));
+        assert!(!exposition.contains("presign"));
     }
 
     #[tokio::test]

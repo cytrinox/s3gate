@@ -97,6 +97,8 @@ With `S3GATE_METRICS_ENABLED=true`, s3gate serves `GET /metrics` in the Promethe
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `s3gate_http_requests_total` | counter | `method`, `status_code` | HTTP requests on the main port, including rejected ones and timeouts (`504`). Probe requests to `/_s3gate/*` are not counted. Unknown methods are reported as `_OTHER`. |
+| `s3gate_http_request_duration_seconds` | histogram | `method`, `status_code` | Time to answer a request on the main port, measured inside s3gate (including the S3 existence check). Same scope as `s3gate_http_requests_total`. Buckets from 1 ms to 60 s. |
+| `s3gate_s3_request_duration_seconds` | histogram | `operation` (`HeadObject`), `result` (`ok`, `not_found`, `forbidden`, `timeout`, `error`) | Latency of calls to S3: the existence check before each redirect (only with `S3GATE_CHECK_EXISTS=true`) and the readiness check (`S3GATE_READINESS_PATH_EXISTS`). A readiness check that hits `S3GATE_READINESS_TIMEOUT` is recorded as `timeout` with that duration. Signing presigned URLs is local and not an S3 call. Buckets from 1 ms to 60 s. |
 | `s3gate_fetches_total` | counter | `level1`…`levelN`, `subpath` | Successful `GET` redirects, grouped by the first N path segments (N = `S3GATE_METRICS_FETCH_LEVELS`). `HEAD`, 404s, errors and timeouts are not counted. |
 
 For `s3gate_fetches_total`, the labels come from the object path below `S3GATE_PREFIX`. A `GET /foo/bar/baz` is labelled:
