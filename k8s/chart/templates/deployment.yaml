@@ -23,6 +23,9 @@ spec:
         {{- if not .Values.credentials.existingSecret }}
         checksum/credentials: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
+        {{- if .Values.overrides }}
+        checksum/overrides: {{ include (print $.Template.BasePath "/overrides.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -118,9 +121,20 @@ spec:
               value: {{ .Values.config.logFormat | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.logLevel | quote }}
+            {{- if .Values.overrides }}
+            - name: S3GATE_OVERRIDES_FILE
+              value: /etc/s3gate/overrides.yaml
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if .Values.overrides }}
+          volumeMounts:
+            - name: overrides
+              mountPath: /etc/s3gate/overrides.yaml
+              subPath: overrides.yaml
+              readOnly: true
+          {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -148,6 +162,12 @@ spec:
               sleep:
                 seconds: {{ .Values.preStopSleepSeconds }}
           {{- end }}
+      {{- if .Values.overrides }}
+      volumes:
+        - name: overrides
+          configMap:
+            name: {{ include "s3gate.fullname" . }}-overrides
+      {{- end }}
       {{- with .Values.topologySpreadConstraints }}
       topologySpreadConstraints:
         {{- range . }}

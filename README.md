@@ -41,6 +41,50 @@ The first path segment `_s3gate` is reserved. Objects under it are never served.
 | `/_s3gate/healthz` | Liveness. Always `200`, never contacts S3. |
 | `/_s3gate/readyz` | Readiness. `200` if `S3GATE_READINESS_PATH_EXISTS` is unset. Otherwise `200` only if that object exists, and `503` if it is missing, access is denied, or the check times out. |
 
+## Overrides
+
+Some paths should not map to objects: `/` might redirect to a homepage, `/robots.txt` might return a fixed text, or a folder might be hidden. An optional YAML file, set with `S3GATE_OVERRIDES_FILE`, defines fixed responses for such paths:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/cytrinox/s3gate/main/overrides.schema.json
+overrides:
+  - path: /
+    type: redirect
+    location: https://example.com/
+    status: 301            # 301 | 302 | 303 | 307 | 308, default 302
+    preserve_query: true   # append the request's query string, default false
+
+  - path: /robots.txt
+    type: content
+    content_type: text/plain; charset=utf-8   # default
+    body: |
+      User-agent: *
+      Disallow: /
+
+  - path: /favicon.ico
+    type: nocontent
+
+  - path: /private/
+    match: prefix          # exact (default) | prefix
+    type: notfound
+```
+
+| `type` | Response |
+|---|---|
+| `redirect` | `status` (default `302`) with `Location: <location>`. `location` is an `http(s)://` URL or a path on this host. |
+| `notfound` | `404`, without contacting S3 |
+| `content` | `200` with `body` (default empty) and `content_type` (default `text/plain; charset=utf-8`) |
+| `nocontent` | `204` without a body |
+
+- **Precedence:** overrides are checked after the method check (other methods still get `405`) and **before** key mapping, the S3 metadata query and signing. A matching override always wins, even when an object with that key exists or `S3GATE_QUERY_METADATA=false`. Health checks under `/_s3gate/` can't be overridden.
+- **Matching:** the percent-decoded path is compared, without the query string. Paths are case-sensitive, and a trailing `/` counts.
+  - `match: prefix` matches every path starting with `path`. Use a trailing `/` (`/private/`) to match a folder, since `/private` would also match `/privateer`. A prefix of `/` matches everything, e.g. for maintenance mode.
+  - An exact rule always beats prefix rules, and among prefixes the longest wins. The order in the file doesn't matter.
+- **HEAD** requests get the same status and headers as GET, without a body.
+- **Validation:** the file is read once at startup. Unknown fields, duplicate paths, invalid redirect targets or status codes, and paths under `/_s3gate/` stop startup with an error naming the entry. [overrides.schema.json](overrides.schema.json) describes the format for editors; the `yaml-language-server` comment above enables completion and checks in VS Code and other editors.
+
+A complete example is in [examples/overrides/overrides.yaml](examples/overrides/overrides.yaml). In the Helm chart, put the rules under `overrides:` in your values; see the [chart README](k8s/chart/README.md).
+
 ## Configuration
 
 All settings are environment variables. `AWS_*` variables, `~/.aws` profiles and instance metadata are **not** used.
@@ -61,6 +105,7 @@ All settings are environment variables. `AWS_*` variables, `~/.aws` profiles and
 | `S3GATE_READINESS_PATH_EXISTS` | – | Object key that must exist for `/_s3gate/readyz` to report ready. Used as-is, not joined with the prefix. |
 | `S3GATE_READINESS_TIMEOUT` | `2` | Timeout in seconds for the readiness check (1–60) |
 | `S3GATE_REQUEST_TIMEOUT` | `30` | Maximum time in seconds to handle one request, including S3 calls and probes (1–3600) |
+| `S3GATE_OVERRIDES_FILE` | – | Path of an optional [overrides file](#overrides) with fixed responses for specific paths |
 | `S3GATE_LISTEN` | `0.0.0.0:8080` | Listen address |
 | `S3GATE_METRICS_ENABLED` | `false` | Serve Prometheus metrics on a separate listener |
 | `S3GATE_METRICS_LISTEN` | `0.0.0.0:9090` | Metrics listen address (must differ from `S3GATE_LISTEN`) |
@@ -102,6 +147,7 @@ With `S3GATE_METRICS_ENABLED=true`, s3gate serves `GET /metrics` in the Promethe
 | `s3gate_fetches_total` | counter | `level1`…`levelN`, `subpath` | Successful `GET` redirects, grouped by the first N path segments (N = `S3GATE_METRICS_FETCH_LEVELS`). `HEAD`, 404s, errors and timeouts are not counted. |
 | `s3gate_approx_fetched_bytes_total` | counter | none, or `level1`…`levelN`, `subpath` like `s3gate_fetches_total` | Approximate traffic: the object size (from the metadata query) added for every successful `GET` redirect. Without `S3GATE_METRICS_FETCH_LEVELS` it is one total for the bucket. Requires `S3GATE_QUERY_METADATA=true`; otherwise the size is unknown and nothing is recorded. |
 | `s3gate_approx_fetched_object_size_bytes` | histogram | none | Object size of every successful `GET` redirect, the same events as `s3gate_approx_fetched_bytes_total`. Shows whether traffic comes from many small or a few large objects. Buckets are powers of 4 from 1 KiB to 16 GiB. It has no path labels on purpose, to keep the number of series small. Requires `S3GATE_QUERY_METADATA=true`. |
+| `s3gate_overrides_total` | counter | `type`, `rule` | Requests answered by an [override](#overrides). `rule` is the configured path, with a trailing `*` for prefix rules. |
 | `s3gate_rejected_requests_total` | counter | `reason` | Requests refused before contacting S3: `method_not_allowed` (405), `bad_encoding` (400), `not_an_object` (empty path or trailing `/`), `unsafe_segment` (empty, `.` or `..` segments, e.g. traversal attempts), `control_character`, `reserved` (`/_s3gate/` paths other than the probes). Missing objects are not rejections. |
 
 `s3gate_approx_fetched_bytes_total` and `s3gate_approx_fetched_object_size_bytes` assume that every redirected client downloads the whole object once. The real traffic at S3 can differ:

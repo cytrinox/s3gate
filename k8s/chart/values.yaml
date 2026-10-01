@@ -55,6 +55,24 @@ config:
   # tracing filter, e.g. "info" or "s3gate=debug,info".
   logLevel: info
 
+# URL overrides, evaluated before key mapping and any S3 call. Same format as an entry in
+# overrides.yaml (see overrides.schema.json in the s3gate repository). Changes roll the pods.
+#   - path: /
+#     type: redirect            # redirect | notfound | content | nocontent
+#     location: https://example.com/
+#     status: 301               # 301 | 302 | 303 | 307 | 308, default 302
+#     preserve_query: true
+#   - path: /robots.txt
+#     type: content
+#     content_type: text/plain; charset=utf-8
+#     body: |
+#       User-agent: *
+#       Disallow: /
+#   - path: /private/
+#     match: prefix             # exact (default) | prefix
+#     type: notfound
+overrides: []
+
 # Additional environment variables for the container.
 extraEnv: []
 

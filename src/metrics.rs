@@ -108,6 +108,7 @@ pub struct HttpMetrics {
     fetched_bytes: Counter<u64>,
     object_size: Histogram<u64>,
     rejected: Counter<u64>,
+    overrides: Counter<u64>,
     /// `level1..levelN` label keys for the fetch counter; empty disables it.
     level_keys: Arc<[Key]>,
 }
@@ -152,6 +153,10 @@ impl HttpMetrics {
                 .u64_counter("s3gate.rejected.requests")
                 .with_description("Requests refused before contacting S3, by reason")
                 .build(),
+            overrides: meter
+                .u64_counter("s3gate.overrides")
+                .with_description("Requests answered by an override rule, by type and rule")
+                .build(),
             level_keys: (1..=fetch_levels)
                 .map(|level| Key::new(format!("level{level}")))
                 .collect(),
@@ -181,6 +186,17 @@ impl HttpMetrics {
     /// Counts a request refused before any S3 call, e.g. `reason = "unsafe_segment"`.
     pub fn record_rejected(&self, reason: &'static str) {
         self.rejected.add(1, &[KeyValue::new("reason", reason)]);
+    }
+
+    /// Counts a request answered by an override; `rule` is the configured path.
+    pub fn record_override(&self, kind: &'static str, rule: &str) {
+        self.overrides.add(
+            1,
+            &[
+                KeyValue::new("type", kind),
+                KeyValue::new("rule", rule.to_owned()),
+            ],
+        );
     }
 
     pub fn record_request(&self, method: &Method, status: StatusCode, elapsed: Duration) {

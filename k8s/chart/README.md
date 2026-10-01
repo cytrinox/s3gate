@@ -45,6 +45,21 @@ helm upgrade --install s3gate oci://ghcr.io/cytrinox/charts/s3gate -n s3gate \
   --set traefik.middlewares.rateLimit.average=20
 ```
 
+Overrides go into the values as a list, e.g. to redirect the root and hide a folder:
+
+```yaml
+overrides:
+  - path: /
+    type: redirect
+    location: https://example.com/
+    status: 301
+  - path: /private/
+    match: prefix
+    type: notfound
+```
+
+An `overrides.yaml` file has the same shape, so it can be passed directly with `-f overrides.yaml`.
+
 Traefik must have its Kubernetes Gateway provider enabled to attach Middlewares via `ExtensionRef` and to route to a TraefikService.
 
 ## Values
@@ -70,6 +85,7 @@ The full list is in [values.yaml](values.yaml).
 | `config.readinessPathExists` | – | Object that must exist for the pod to be ready |
 | `config.readinessTimeout` | `2` | Keep below `readinessProbe.timeoutSeconds` |
 | `config.logFormat` / `config.logLevel` | `json` / `info` | |
+| `overrides` | `[]` | [URL overrides](../../README.md#overrides): fixed responses (redirect, notfound, content, nocontent) for specific paths, evaluated before any S3 call. Same entries as in `overrides.yaml`; changes roll the pods. |
 | `extraEnv` | `[]` | Additional container env entries |
 | `hostUsers` | `false` | Run in a user namespace |
 | `preStopSleepSeconds` | `5` | Delay before SIGTERM so ingresses stop routing to the pod |

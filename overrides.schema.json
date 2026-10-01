@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/cytrinox/s3gate/main/overrides.schema.json",
+  "title": "s3gate overrides",
+  "description": "Fixed responses for specific URL paths. Evaluated before key mapping, the S3 metadata query and signing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overrides"],
+  "properties": {
+    "overrides": {
+      "type": "array",
+      "description": "Override rules. An exact match wins over prefix matches; among prefix matches the longest path wins.",
+      "items": { "$ref": "#/$defs/override" }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "description": "Decoded request path, starting with '/'. Case-sensitive; a trailing '/' is significant. Paths under /_s3gate/ are reserved.",
+      "pattern": "^/[^?#\\u0000-\\u001F\\u007F]*$",
+      "not": { "pattern": "^/_s3gate(/|$)" }
+    },
+    "match": {
+      "description": "exact: the path must equal 'path'. prefix: the path must start with 'path'.",
+      "enum": ["exact", "prefix"],
+      "default": "exact"
+    },
+    "override": {
+      "oneOf": [
+        { "$ref": "#/$defs/redirect" },
+        { "$ref": "#/$defs/notfound" },
+        { "$ref": "#/$defs/content" },
+        { "$ref": "#/$defs/nocontent" }
+      ]
+    },
+    "redirect": {
+      "type": "object",
+      "description": "Redirect to another URL.",
+      "additionalProperties": false,
+      "required": ["path", "type", "location"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "match": { "$ref": "#/$defs/match" },
+        "type": { "const": "redirect" },
+        "location": {
+          "type": "string",
+          "description": "Target URL (http:// or https://) or absolute path on this host.",
+          "minLength": 1,
+          "pattern": "^(https?://|/)"
+        },
+        "status": {
+          "description": "Redirect status code.",
+          "enum": [301, 302, 303, 307, 308],
+          "default": 302
+        },
+        "preserve_query": {
+          "type": "boolean",
+          "description": "Append the request's query string to 'location'.",
+          "default": false
+        }
+      }
+    },
+    "notfound": {
+      "type": "object",
+      "description": "Answer 404 without contacting S3.",
+      "additionalProperties": false,
+      "required": ["path", "type"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "match": { "$ref": "#/$defs/match" },
+        "type": { "const": "notfound" }
+      }
+    },
+    "content": {
+      "type": "object",
+      "description": "Answer 200 with a fixed body.",
+      "additionalProperties": false,
+      "required": ["path", "type"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "match": { "$ref": "#/$defs/match" },
+        "type": { "const": "content" },
+        "body": { "type": "string", "description": "Response body.", "default": "" },
+        "content_type": {
+          "type": "string",
+          "description": "Content-Type header.",
+          "minLength": 1,
+          "default": "text/plain; charset=utf-8"
+        }
+      }
+    },
+    "nocontent": {
+      "type": "object",
+      "description": "Answer 204 without a body.",
+      "additionalProperties": false,
+      "required": ["path", "type"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "match": { "$ref": "#/$defs/match" },
+        "type": { "const": "nocontent" }
+      }
+    }
+  }
+}

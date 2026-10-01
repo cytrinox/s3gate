@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/cytrinox/s3gate/main/overrides.schema.json
+overrides:
+  - path: /
+    type: redirect
+    location: https://example.com/
+    status: 301            # 301 | 302 | 303 | 307 | 308, default 302
+    preserve_query: true   # append the request's query string, default false
+
+  - path: /robots.txt
+    type: content
+    content_type: text/plain; charset=utf-8   # default
+    body: |
+      User-agent: *
+      Disallow: /
+
+  - path: /favicon.ico
+    type: nocontent
+
+  - path: /private/
+    match: prefix          # exact (default) | prefix
+    type: notfound

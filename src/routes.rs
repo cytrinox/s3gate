@@ -17,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use percent_encoding::percent_decode_str;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::TraceLayer,
@@ -27,6 +28,7 @@ use crate::{
     config::Config,
     keys::{self, KeyError},
     metrics::HttpMetrics,
+    overrides::Overrides,
     store::{ObjectInfo, ObjectStore, PresignMethod, StoreError},
 };
 
@@ -38,6 +40,8 @@ pub struct Settings {
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
     pub request_timeout: Duration,
+    /// Evaluated before key mapping and any S3 call.
+    pub overrides: Arc<Overrides>,
 }
 
 impl From<&Config> for Settings {
@@ -50,6 +54,7 @@ impl From<&Config> for Settings {
             readiness_path_exists: config.readiness_path_exists.clone(),
             readiness_timeout: config.readiness_timeout,
             request_timeout: config.request_timeout,
+            overrides: Arc::default(),
         }
     }
 }
@@ -88,6 +93,13 @@ struct Fetched {
     path: String,
     /// Object size from the metadata query; `None` when metadata is not queried.
     size: Option<u64>,
+}
+
+/// Response marker for a request answered by an override rule.
+#[derive(Clone)]
+struct OverrideHit {
+    kind: &'static str,
+    rule: Arc<str>,
 }
 
 /// Response marker for a request refused before any S3 call, carrying the reason label.
@@ -141,6 +153,9 @@ async fn count_requests(
     }
     if let Some(fetched) = response.extensions().get::<Fetched>() {
         http_metrics.record_fetch(&fetched.path, fetched.size);
+    }
+    if let Some(hit) = response.extensions().get::<OverrideHit>() {
+        http_metrics.record_override(hit.kind, &hit.rule);
     }
     if let Some(Rejected(reason)) = response.extensions().get::<Rejected>() {
         http_metrics.record_rejected(reason);
@@ -230,6 +245,10 @@ async fn gate<S: ObjectStore>(
     };
 
     let settings = &state.settings;
+    if let Some(response) = apply_override(&settings.overrides, &span, &uri) {
+        return response;
+    }
+
     span.record("bucket", settings.bucket.as_str());
     let key = match keys::map_path(&settings.prefix, uri.path()) {
         Ok(key) => key,
@@ -323,6 +342,21 @@ fn with_s3_call(mut response: Response, call: S3Call) -> Response {
     response
 }
 
+/// Answers from a matching override rule, if any. Paths that fail to decode never match;
+/// they are rejected later by key mapping.
+fn apply_override(overrides: &Overrides, span: &Span, uri: &Uri) -> Option<Response> {
+    let path = percent_decode_str(uri.path()).decode_utf8().ok()?;
+    let rule = overrides.find(&path)?;
+    span.record("outcome", "override");
+    span.record("override_rule", &**rule.label());
+    let mut response = rule.respond(uri.query());
+    response.extensions_mut().insert(OverrideHit {
+        kind: rule.kind().label(),
+        rule: Arc::clone(rule.label()),
+    });
+    Some(response)
+}
+
 fn store_failure(span: &Span, err: StoreError) -> Response {
     let (status, outcome) = match err {
         StoreError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
@@ -383,6 +417,7 @@ fn make_span(request: &Request) -> Span {
         bucket = Empty,
         key = Empty,
         outcome = Empty,
+        override_rule = Empty,
     )
 }
 
@@ -472,6 +507,7 @@ mod tests {
             readiness_path_exists: None,
             readiness_timeout: Duration::from_secs(2),
             request_timeout: Duration::from_secs(30),
+            overrides: Arc::default(),
         }
     }
 
@@ -1029,6 +1065,101 @@ mod tests {
                 .unwrap_or_else(|| panic!("no series for {reason}: {exposition}"));
             assert!(line.ends_with(" 1"), "{line}");
         }
+    }
+
+    fn with_example_overrides(settings: Settings) -> Settings {
+        let yaml = include_str!("../examples/overrides/overrides.yaml");
+        Settings {
+            overrides: Arc::new(Overrides::parse(yaml).unwrap()),
+            ..settings
+        }
+    }
+
+    #[tokio::test]
+    async fn overrides_answer_before_s3() {
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let state = AppState::new(
+            store(&["private/a.txt", "other.txt"]),
+            with_example_overrides(settings()),
+        );
+        let app = router(state.clone(), HttpMetrics::new(&metrics.meter(), 1));
+
+        let root = send_to(app.clone(), Method::GET, "/").await;
+        assert_eq!(root.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(location(&root), "https://example.com/");
+
+        let with_query = send_to(app.clone(), Method::GET, "/?ref=mail").await;
+        assert_eq!(location(&with_query), "https://example.com/?ref=mail");
+
+        let robots = send_to(app.clone(), Method::GET, "/robots.txt").await;
+        assert_eq!(robots.status(), StatusCode::OK);
+        assert_eq!(body(robots).await, "User-agent: *\nDisallow: /\n");
+
+        let robots_head = send_to(app.clone(), Method::HEAD, "/robots.txt").await;
+        assert_eq!(robots_head.status(), StatusCode::OK);
+        assert_eq!(
+            robots_head.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(body(robots_head).await, "");
+
+        let favicon = send_to(app.clone(), Method::GET, "/favicon.ico").await;
+        assert_eq!(favicon.status(), StatusCode::NO_CONTENT);
+
+        // The prefix rule wins although the object exists.
+        let private = send_to(app.clone(), Method::GET, "/private/a.txt").await;
+        assert_eq!(private.status(), StatusCode::NOT_FOUND);
+        assert_eq!(state.store.head_calls.load(Ordering::SeqCst), 0);
+
+        // Methods are checked first.
+        let post = send_to(app.clone(), Method::POST, "/").await;
+        assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+        // Other paths still go to S3.
+        let other = send_to(app, Method::GET, "/other.txt").await;
+        assert_eq!(other.status(), StatusCode::FOUND);
+        assert_eq!(state.store.head_calls.load(Ordering::SeqCst), 1);
+
+        let exposition = String::from_utf8(metrics.encode().unwrap()).unwrap();
+        let hits = series(&exposition, "s3gate_overrides_total");
+        let count = |labels: &str| {
+            hits.iter()
+                .find(|line| line.contains(labels))
+                .and_then(|line| line.rsplit(' ').next())
+        };
+        assert_eq!(
+            count(r#"rule="/",type="redirect""#),
+            Some("2"),
+            "{exposition}"
+        );
+        assert_eq!(count(r#"rule="/robots.txt",type="content""#), Some("2"));
+        assert_eq!(count(r#"rule="/favicon.ico",type="nocontent""#), Some("1"));
+        assert_eq!(count(r#"rule="/private/*",type="notfound""#), Some("1"));
+        // Overrides are neither fetches nor rejections (only the POST is rejected).
+        assert_eq!(fetch_series(&exposition).len(), 1, "{exposition}");
+        assert_eq!(
+            series(&exposition, "s3gate_rejected_requests_total").len(),
+            1,
+            "{exposition}"
+        );
+    }
+
+    #[tokio::test]
+    async fn overrides_work_without_metadata_query() {
+        let state = AppState::new(
+            store(&[]),
+            with_example_overrides(Settings {
+                query_metadata: false,
+                ..settings()
+            }),
+        );
+        let root = send(state.clone(), Method::GET, "/").await;
+        assert_eq!(root.status(), StatusCode::MOVED_PERMANENTLY);
+        let private = send(state.clone(), Method::GET, "/private/x").await;
+        assert_eq!(private.status(), StatusCode::NOT_FOUND);
+        // Without an override, the unchecked path is signed as before.
+        let other = send(state, Method::GET, "/other.txt").await;
+        assert_eq!(other.status(), StatusCode::FOUND);
     }
 
     #[test]

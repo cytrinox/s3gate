@@ -4,10 +4,11 @@
 mod config;
 mod keys;
 mod metrics;
+mod overrides;
 mod routes;
 mod store;
 
-use std::{future::IntoFuture, net::SocketAddr, process::ExitCode, sync::Arc};
+use std::{future::IntoFuture, net::SocketAddr, path::Path, process::ExitCode, sync::Arc};
 
 use tokio::{
     net::TcpListener,
@@ -20,6 +21,7 @@ use tracing_subscriber::EnvFilter;
 use crate::{
     config::{Config, LogFormat},
     metrics::{HttpMetrics, Metrics},
+    overrides::Overrides,
     routes::{AppState, Settings},
     store::S3Store,
 };
@@ -33,9 +35,18 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let overrides = match config.overrides_file.as_deref().map(Overrides::load) {
+        None => Overrides::default(),
+        Some(Ok(overrides)) => overrides,
+        Some(Err(err)) => {
+            let file = config.overrides_file.as_deref().unwrap_or(Path::new("-"));
+            eprintln!("s3gate: overrides error in {}: {err}", file.display());
+            return ExitCode::FAILURE;
+        }
+    };
     init_tracing(config.log_format);
 
-    match run(config).await {
+    match run(config, overrides).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             error!(error = %err, "s3gate terminated");
@@ -57,7 +68,7 @@ fn init_tracing(format: LogFormat) {
     }
 }
 
-async fn run(config: Config) -> std::io::Result<()> {
+async fn run(config: Config, overrides: Overrides) -> std::io::Result<()> {
     info!(
         bucket = %config.bucket,
         prefix = %config.prefix,
@@ -73,7 +84,21 @@ async fn run(config: Config) -> std::io::Result<()> {
         "starting s3gate"
     );
 
-    let state = AppState::new(S3Store::new(&config), Settings::from(&config));
+    let (exact_overrides, prefix_overrides) = overrides.counts();
+    if let Some(file) = &config.overrides_file {
+        info!(
+            file = %file.display(),
+            exact = exact_overrides,
+            prefix = prefix_overrides,
+            "loaded overrides"
+        );
+    }
+
+    let settings = Settings {
+        overrides: Arc::new(overrides),
+        ..Settings::from(&config)
+    };
+    let state = AppState::new(S3Store::new(&config), settings);
     let listener = TcpListener::bind(config.listen).await?;
     info!(listen = %listener.local_addr()?, "listening");
 

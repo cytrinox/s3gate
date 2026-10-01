@@ -3,7 +3,7 @@
 
 //! Runtime configuration, read exclusively from `S3GATE_*` environment variables.
 
-use std::{env, fmt, net::SocketAddr, time::Duration};
+use std::{env, fmt, net::SocketAddr, path::PathBuf, time::Duration};
 
 /// Longest lifetime SigV4 allows for a presigned URL.
 const MAX_PRESIGN_TTL_SECS: u64 = 7 * 24 * 60 * 60;
@@ -34,6 +34,8 @@ pub struct Config {
     pub readiness_path_exists: Option<String>,
     pub readiness_timeout: Duration,
     pub request_timeout: Duration,
+    /// Path of the optional `overrides.yaml`.
+    pub overrides_file: Option<PathBuf>,
     pub listen: SocketAddr,
     pub metrics_enabled: bool,
     pub metrics_listen: SocketAddr,
@@ -104,6 +106,7 @@ impl Config {
                 .map(|value| parse_secs("S3GATE_REQUEST_TIMEOUT", value, 3600))
                 .transpose()?
                 .unwrap_or(Duration::from_secs(30)),
+            overrides_file: get("S3GATE_OVERRIDES_FILE").map(PathBuf::from),
             listen: get("S3GATE_LISTEN")
                 .map(|value| parse_addr("S3GATE_LISTEN", value))
                 .transpose()?
@@ -164,6 +167,7 @@ impl fmt::Debug for Config {
             .field("readiness_path_exists", &self.readiness_path_exists)
             .field("readiness_timeout", &self.readiness_timeout)
             .field("request_timeout", &self.request_timeout)
+            .field("overrides_file", &self.overrides_file)
             .field("listen", &self.listen)
             .field("metrics_enabled", &self.metrics_enabled)
             .field("metrics_listen", &self.metrics_listen)
@@ -269,6 +273,7 @@ mod tests {
         assert_eq!(config.readiness_path_exists, None);
         assert_eq!(config.readiness_timeout, Duration::from_secs(2));
         assert_eq!(config.request_timeout, Duration::from_secs(30));
+        assert_eq!(config.overrides_file, None);
         assert_eq!(config.listen, "0.0.0.0:8080".parse().unwrap());
         assert!(!config.metrics_enabled);
         assert_eq!(config.metrics_listen, "0.0.0.0:9090".parse().unwrap());
@@ -329,6 +334,7 @@ mod tests {
             ("S3GATE_READINESS_PATH_EXISTS", "/.ready"),
             ("S3GATE_READINESS_TIMEOUT", "5"),
             ("S3GATE_REQUEST_TIMEOUT", "12"),
+            ("S3GATE_OVERRIDES_FILE", "/etc/s3gate/overrides.yaml"),
             ("S3GATE_LISTEN", "127.0.0.1:9999"),
             ("S3GATE_METRICS_ENABLED", "yes"),
             ("S3GATE_METRICS_LISTEN", "127.0.0.1:9100"),
@@ -349,6 +355,10 @@ mod tests {
         assert_eq!(config.readiness_path_exists.as_deref(), Some(".ready"));
         assert_eq!(config.readiness_timeout, Duration::from_secs(5));
         assert_eq!(config.request_timeout, Duration::from_secs(12));
+        assert_eq!(
+            config.overrides_file,
+            Some(PathBuf::from("/etc/s3gate/overrides.yaml"))
+        );
         assert_eq!(config.listen, "127.0.0.1:9999".parse().unwrap());
         assert!(config.metrics_enabled);
         assert_eq!(config.metrics_listen, "127.0.0.1:9100".parse().unwrap());
